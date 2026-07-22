@@ -55,9 +55,31 @@
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
+  // Strips UI chrome that leaks into innerText-based extraction on modern
+  // reasoning-model interfaces:
+  //  - screen-reader-only "<Model> responded:" labels — a11y text nodes that
+  //    use a visually-hidden CSS technique (clipped, not display:none) which
+  //    innerText doesn't always exclude the way it does true display:none
+  //  - "Thought for Xs" reasoning-disclosure headers, which some sites leave
+  //    visible above the final answer even after it's done, sometimes with a
+  //    duplicate (once for the live label, once for an a11y-only echo)
+  //  - stray private-use-area glyphs from icon fonts (the collapse/expand
+  //    toggle icon) that render as a tofu box with no real text meaning
+  // General cleanup applied to every extraction, not site-specific.
+  function cleanExtractedText(text) {
+    return text
+      .replace(/^\s*(ChatGPT|Claude|Gemini)\s+responded:\s*/i, "")
+      .split("\n")
+      .map((line) => line.replace(/[\uE000-\uF8FF]/g, "").trim())
+      .filter((line) => !/^Thought for\s+[\w\s]+$/i.test(line))
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
   // Fallback completion signal: watches `root` for DOM mutations and, once
   // things have been quiet for `quietMs`, re-queries `selector` fresh and
-  // calls onSettled with the LAST matching element's text.
+  // calls onSettled with the LAST matching element's (cleaned) text.
   //
   // Deliberately re-queries at finish time rather than watching one node
   // captured earlier: some sites (ChatGPT's reasoning UI, for one) render an
@@ -87,7 +109,7 @@
       observer.disconnect();
       const nodes = root.querySelectorAll(selector);
       const last = nodes[nodes.length - 1];
-      onSettled(last ? last.innerText.trim() : "");
+      onSettled(last ? cleanExtractedText(last.innerText) : "");
     }
   }
 
@@ -160,6 +182,47 @@
     log(service, "model: selected", target.innerText.trim().slice(0, 60));
   }
 
+  // Best-effort file attachment for a prompt with media. `media` is
+  // [{ name, type, dataUrl }]. Converts each data URL back to a real File and
+  // assigns them to the site's own hidden file input via a DataTransfer, then
+  // fires a change event — the same trick a real drag-and-drop or file
+  // picker interaction ends with.
+  //
+  // IMPORTANT: selectors.fileInput is an unverified placeholder in every
+  // site's content script as of this writing, same caveat as
+  // modelTrigger/modelOption above — no live look at any of these upload
+  // mechanisms yet. Some sites may require a drop event on the composer
+  // instead of a file input; that would need its own follow-up if this
+  // simpler approach doesn't pan out.
+  async function tryAttachMedia(service, selectors, media) {
+    if (!media || media.length === 0) return;
+    if (!selectors.fileInput) {
+      log(service, "media: no file input selector configured, skipping attachment");
+      return;
+    }
+    const input = document.querySelector(selectors.fileInput);
+    if (!input) {
+      log(service, "media: file input not found (selector may be stale)");
+      return;
+    }
+    try {
+      const files = await Promise.all(media.map(dataUrlToFile));
+      const dataTransfer = new DataTransfer();
+      files.forEach((file) => dataTransfer.items.add(file));
+      input.files = dataTransfer.files;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      log(service, `media: attached ${files.length} file(s) via file input`);
+    } catch (err) {
+      log(service, "media: attachment failed:", err);
+    }
+  }
+
+  async function dataUrlToFile({ name, type, dataUrl }) {
+    const res = await fetch(dataUrl);
+    const blob = await res.blob();
+    return new File([blob], name, { type });
+  }
+
   self.WC_HELPERS = {
     log,
     sendStatus,
@@ -168,5 +231,6 @@
     watchUntilSettled,
     waitForNewNode,
     trySetModel,
+    tryAttachMedia,
   };
 })();

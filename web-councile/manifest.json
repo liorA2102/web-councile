@@ -3,7 +3,7 @@
   "name": "Web Councile",
   "version": "0.1.0",
   "description": "Write a prompt once, send it to your open ChatGPT, Claude, and Gemini sessions, and see all three answers in one window.",
-  "permissions": ["scripting", "tabs", "storage"],
+  "permissions": ["scripting", "tabs", "storage", "unlimitedStorage"],
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://claude.ai/*",

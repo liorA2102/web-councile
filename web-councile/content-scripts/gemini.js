@@ -19,6 +19,7 @@
     watchUntilSettled,
     waitForNewNode,
     trySetModel,
+    tryAttachMedia,
   } = self.WC_HELPERS;
   const SERVICE = "gemini";
 
@@ -37,6 +38,11 @@
     // dropdown, inspect it, adjust these two lines).
     modelTrigger: '[data-test-id*="model"], [aria-haspopup="menu"][aria-label*="odel" i]',
     modelOption: '[role="menuitemradio"], [role="menuitem"]',
+    // UNVERIFIED — no live look at this yet either. Most composers hide a
+    // real <input type="file"> behind the attach button; if this doesn't
+    // work, open devtools, click the attach button, and find the real
+    // element (or the drop-zone it needs a simulated drop on instead).
+    fileInput: 'input[type="file"]',
   };
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -47,14 +53,14 @@
       return true; // keep the channel open for the async sendResponse above
     }
     if (message?.type !== MSG_RUN_PROMPT) return;
-    run(message.prompt).catch((err) => {
+    run(message.prompt, message.media).catch((err) => {
       console.error(`[WebCouncile:${SERVICE}] unhandled error`, err);
       sendStatus(SERVICE, STATUS.ERROR, String(err?.message || err));
     });
     sendResponse({ ok: true });
   });
 
-  async function run(prompt) {
+  async function run(prompt, media) {
     log(SERVICE, "run() start");
 
     const composer = document.querySelector(SELECTORS.composer);
@@ -71,6 +77,12 @@
         );
       }
       return;
+    }
+
+    if (media && media.length) {
+      log(SERVICE, `attaching ${media.length} file(s)`);
+      await tryAttachMedia(SERVICE, SELECTORS, media);
+      await new Promise((r) => setTimeout(r, 300));
     }
 
     log(SERVICE, "composer found, inserting prompt");
@@ -108,7 +120,7 @@
     }
 
     log(SERVICE, "new message node found, watching until settled");
-    watchUntilSettled(document.body, SELECTORS.assistantMessage, 1500, (finalText) => {
+    watchUntilSettled(document.body, SELECTORS.assistantMessage, 800, (finalText) => {
       log(SERVICE, "settled, final length =", finalText.length);
       sendStatus(SERVICE, STATUS.DONE, finalText);
     });

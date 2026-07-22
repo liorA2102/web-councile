@@ -100,7 +100,7 @@ function remapForConsolidation(message) {
 
 function handleCouncilMessage(message) {
   if (message?.type === MSG_BROADCAST_PROMPT) {
-    broadcastPrompt(message.text, message.services);
+    broadcastPrompt(message.text, message.services, message.media);
   } else if (message?.type === MSG_CONSOLIDATE) {
     consolidate(message.via, message.prompt);
   } else if (message?.type === MSG_OPEN_SESSIONS) {
@@ -159,7 +159,11 @@ async function newCouncil() {
 
 // `services` is the council's current roster (members the user hasn't
 // toggled off); falls back to everyone if the caller didn't specify one.
-function broadcastPrompt(prompt, services) {
+// `media` (optional) is an array of { name, type, dataUrl } attachments —
+// only ever sent with the initial broadcast, never with consolidation
+// (the judge synthesizes from the visible text answers, not the original
+// attachment).
+function broadcastPrompt(prompt, services, media) {
   const serviceKeys =
     Array.isArray(services) && services.length
       ? services.filter((key) => SERVICES[key])
@@ -169,9 +173,10 @@ function broadcastPrompt(prompt, services) {
     JSON.stringify(prompt).slice(0, 120),
     "-> ",
     serviceKeys.join(", "),
+    media?.length ? `+${media.length} attachment(s)` : "",
   );
   for (const serviceKey of serviceKeys) {
-    runForService(serviceKey, prompt).catch((err) => {
+    runForService(serviceKey, prompt, serviceKey, media).catch((err) => {
       log(serviceKey, "runForService failed:", err);
       relayToCouncil({
         type: MSG_STATUS_UPDATE,
@@ -206,7 +211,7 @@ function consolidate(via, prompt) {
   });
 }
 
-async function runForService(serviceKey, prompt, storageKey = serviceKey) {
+async function runForService(serviceKey, prompt, storageKey = serviceKey, media) {
   const service = SERVICES[serviceKey];
 
   relayToCouncil({
@@ -217,6 +222,7 @@ async function runForService(serviceKey, prompt, storageKey = serviceKey) {
   });
 
   const { tabId, isFresh } = await getOrCreateTab(serviceKey, service, storageKey);
+  const urlBeforeSend = (await chrome.tabs.get(tabId).catch(() => null))?.url;
   log(storageKey, "using tabId", tabId, isFresh ? "(fresh chat)" : "(existing conversation)");
 
   await chrome.scripting.executeScript({
@@ -261,14 +267,15 @@ async function runForService(serviceKey, prompt, storageKey = serviceKey) {
   await chrome.tabs.sendMessage(tabId, {
     type: MSG_RUN_PROMPT,
     prompt,
+    media,
   });
   log(storageKey, "MSG_RUN_PROMPT delivered");
 
-  // Give the site a moment to route to its real, permanent conversation URL
-  // (these apps only assign one once a message is actually sent), then pin
-  // it so this same session gets reused next time instead of the council
-  // guessing at "whichever tab happens to be open."
-  setTimeout(() => capturePinnedUrl(storageKey, tabId), 1200);
+  // These apps only assign a real, permanent conversation URL once a message
+  // is actually sent — poll for it to actually change rather than guessing a
+  // fixed delay, then pin it so this same session gets reused next time
+  // instead of the council reopening a blank "new chat" URL forever.
+  capturePinnedUrl(storageKey, tabId, urlBeforeSend);
 }
 
 // Compares two chat URLs ignoring query string/hash (session IDs live in the
@@ -349,18 +356,52 @@ async function savePinnedUrl(storageKey, url) {
   });
 }
 
-// Reads back a tab's current URL after a run and pins it for next time —
-// this is what makes "New council" self-pinning: the first real message
-// sent to a fresh chat captures its now-permanent conversation URL, no
-// manual copy/paste required.
-async function capturePinnedUrl(storageKey, tabId) {
+// Polls a tab's URL until it differs from `previousUrl` (real navigation to
+// a permanent conversation happened) or `timeoutMs` elapses. Resolves null
+// on timeout or if the tab got closed — a fixed short delay was unreliable
+// here since some sites take a few seconds to route to the real URL, and
+// capturing too early just re-pins the generic "new chat" URL forever.
+function waitForUrlChange(tabId, previousUrl, timeoutMs) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    (async function poll() {
+      let tab;
+      try {
+        tab = await chrome.tabs.get(tabId);
+      } catch (_e) {
+        resolve(null); // tab was closed
+        return;
+      }
+      if (tab?.url && tab.url !== previousUrl) {
+        resolve(tab.url);
+        return;
+      }
+      if (Date.now() - start > timeoutMs) {
+        resolve(null);
+        return;
+      }
+      setTimeout(poll, 500);
+    })();
+  });
+}
+
+// Reads back a tab's real conversation URL after a run and pins it for next
+// time — this is what makes "New council" self-pinning: the first real
+// message sent to a fresh chat captures its now-permanent conversation URL,
+// no manual copy/paste required. Only pins if the URL actually changed from
+// before the send — if it never does within the timeout, leaves whatever
+// was pinned before untouched rather than overwriting it with a generic one.
+async function capturePinnedUrl(storageKey, tabId, urlBeforeSend) {
+  const finalUrl = await waitForUrlChange(tabId, urlBeforeSend, 20000);
+  if (!finalUrl) {
+    log(storageKey, "conversation URL never changed — not pinning");
+    return;
+  }
   try {
-    const tab = await chrome.tabs.get(tabId);
-    if (!tab?.url) return;
-    await savePinnedUrl(storageKey, tab.url);
-    log(storageKey, "auto-pinned session ->", tab.url);
+    await savePinnedUrl(storageKey, finalUrl);
+    log(storageKey, "auto-pinned session ->", finalUrl);
   } catch (_e) {
-    // Tab may have been closed in the meantime; nothing to pin.
+    // Storage write failed; nothing more to do.
   }
 }
 

@@ -70,36 +70,6 @@
       </div>
     </header>
 
-    <section class="composer">
-      <textarea
-        id="prompt"
-        placeholder="Address the council&#8230;"
-        rows="1"
-      ></textarea>
-      <button
-        id="send"
-        class="btn-icon btn-send"
-        type="button"
-        title="Send (Enter)"
-        aria-label="Send"
-      >
-        <svg
-          viewBox="0 0 24 24"
-          width="18"
-          height="18"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
-        >
-          <path d="M22 2 11 13" />
-          <path d="M22 2 15 22l-4-9-9-4Z" />
-        </svg>
-      </button>
-    </section>
-
     <div class="roster" role="group" aria-label="Council members">
       <button
         class="member-toggle"
@@ -127,70 +97,62 @@
       </button>
     </div>
 
-    <main class="columns">
-      <section class="column" data-service="chatgpt">
-        <div class="column-header">
-          <span class="seat-dot"></span>
-          <span class="name">ChatGPT</span>
-          <span class="status" data-role="status">Idle</span>
-        </div>
-        <div class="response" data-role="response"></div>
-      </section>
+    <main class="transcript" id="transcript"></main>
 
-      <section class="column" data-service="claude">
-        <div class="column-header">
-          <span class="seat-dot"></span>
-          <span class="name">Claude</span>
-          <span class="status" data-role="status">Idle</span>
-        </div>
-        <div class="response" data-role="response"></div>
-      </section>
-
-      <section class="column" data-service="gemini">
-        <div class="column-header">
-          <span class="seat-dot"></span>
-          <span class="name">Gemini</span>
-          <span class="status" data-role="status">Idle</span>
-        </div>
-        <div class="response" data-role="response"></div>
-      </section>
-    </main>
-
-    <section class="verdict" data-service="consolidated">
-      <div class="verdict-header">
+    <footer class="composer">
+      <div class="composer-attachments" id="composer-attachments" hidden></div>
+      <div class="composer-row">
         <button
-          id="verdict-toggle"
-          class="verdict-chevron"
+          id="attach"
+          class="btn-icon"
           type="button"
-          aria-expanded="false"
-          aria-controls="verdict-body"
-          title="Expand/collapse verdict"
+          title="Attach a file"
+          aria-label="Attach a file"
         >
-          &#9662;
+          <svg
+            viewBox="0 0 24 24"
+            width="17"
+            height="17"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M21.44 11.05 12.25 20.24a5 5 0 0 1-7.07-7.07l8.49-8.49a3.5 3.5 0 0 1 4.95 4.95L9.53 18.72a2 2 0 0 1-2.83-2.83l7.78-7.78" />
+          </svg>
         </button>
-        <span class="seat-dot"></span>
-        <span class="name">Consolidated&nbsp;Verdict</span>
-        <span class="status" data-role="status">Awaiting quorum</span>
-        <label
-          class="auto-toggle"
-          title="Automatically consolidate once at least two members finish"
-        >
-          <input type="checkbox" id="auto-consolidate" checked />
-          Auto
-        </label>
+        <input id="attach-input" type="file" multiple hidden />
+        <textarea
+          id="prompt"
+          placeholder="Address the council&#8230; (paste a screenshot or file to attach it)"
+          rows="1"
+        ></textarea>
         <button
-          id="consolidate"
-          class="btn btn-consolidate"
+          id="send"
+          class="btn-icon btn-send"
           type="button"
-          disabled
+          title="Send (Enter)"
+          aria-label="Send"
         >
-          &#9889; Consolidate
+          <svg
+            viewBox="0 0 24 24"
+            width="18"
+            height="18"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M22 2 11 13" />
+            <path d="M22 2 15 22l-4-9-9-4Z" />
+          </svg>
         </button>
       </div>
-      <div id="verdict-body" class="verdict-body">
-        <div class="response" data-role="response"></div>
-      </div>
-    </section>
+    </footer>
 
     <dialog id="session-modal">
       <form method="dialog" class="crm-form">
@@ -202,14 +164,6 @@
           link. Leave a field blank to fall back to "whichever tab is open."
           Auto-filled automatically once a fresh council's first prompt is
           sent — you don't need to fill these in by hand.
-        </p>
-        <p class="crm-hint">
-          Preferred model only applies when a brand-new chat is opened for
-          that seat (an existing/reused conversation already has its model
-          locked in). Leave blank to automatically pick the most
-          capable/advanced option available; type "default" to leave the
-          site's own default alone; or type part of a model's name (e.g.
-          "Opus", "Pro", "Thinking") to match it.
         </p>
         <label>Editing council</label>
         <div class="council-picker" id="settings-council-picker">
@@ -227,12 +181,13 @@
           placeholder="https://chatgpt.com/c/&#8230;"
           autocomplete="off"
         />
-        <label for="session-chatgpt-model">ChatGPT preferred model (optional)</label>
+        <label for="session-chatgpt-model" hidden>ChatGPT preferred model (optional)</label>
         <input
           id="session-chatgpt-model"
           type="text"
           placeholder="Blank = most advanced"
           autocomplete="off"
+          hidden
         />
         <label for="session-claude">Claude conversation URL</label>
         <input
@@ -241,12 +196,13 @@
           placeholder="https://claude.ai/chat/&#8230;"
           autocomplete="off"
         />
-        <label for="session-claude-model">Claude preferred model (optional)</label>
+        <label for="session-claude-model" hidden>Claude preferred model (optional)</label>
         <input
           id="session-claude-model"
           type="text"
           placeholder="Blank = most advanced"
           autocomplete="off"
+          hidden
         />
         <label for="session-gemini">Gemini conversation URL</label>
         <input
@@ -255,12 +211,13 @@
           placeholder="https://gemini.google.com/app/&#8230;"
           autocomplete="off"
         />
-        <label for="session-gemini-model">Gemini preferred model (optional)</label>
+        <label for="session-gemini-model" hidden>Gemini preferred model (optional)</label>
         <input
           id="session-gemini-model"
           type="text"
           placeholder="Blank = most advanced"
           autocomplete="off"
+          hidden
         />
 
         <h2>Consolidation judge</h2>
@@ -268,8 +225,7 @@
           Consolidation runs in its own dedicated session, separate from the
           members above, so it never appends a "merge these answers" turn
           into one of your real conversations. Pick which service judges, and
-          optionally pin its own conversation URL and preferred model the
-          same way.
+          optionally pin its own conversation URL the same way.
         </p>
         <label for="judge-service">Judge service</label>
         <select id="judge-service">
@@ -284,12 +240,13 @@
           placeholder="Auto-pins itself after first use if left blank"
           autocomplete="off"
         />
-        <label for="judge-model">Judge preferred model (optional)</label>
+        <label for="judge-model" hidden>Judge preferred model (optional)</label>
         <input
           id="judge-model"
           type="text"
           placeholder="Blank = most advanced"
           autocomplete="off"
+          hidden
         />
         <div class="crm-form-actions">
           <button id="session-cancel" type="button" class="btn btn-ghost">
