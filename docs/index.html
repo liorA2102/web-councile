@@ -476,11 +476,30 @@
     .mresponse { min-height: 0; }
   }
 
-  /* ---------- process ---------- */
+  /* ---------- capabilities (process + features, one section) ---------- */
 
-  .process {
+  .capabilities {
     padding: 64px 0;
     border-top: 1px solid var(--border);
+  }
+
+  .subhead {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 48px 0 20px;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .subhead::before {
+    content: "";
+    width: 22px;
+    height: 1px;
+    background: linear-gradient(90deg, var(--teal), var(--gold));
   }
 
   .section-head {
@@ -560,13 +579,6 @@
 
   @media (max-width: 760px) {
     .steps { grid-template-columns: 1fr; }
-  }
-
-  /* ---------- features ---------- */
-
-  .features {
-    padding: 64px 0;
-    border-top: 1px solid var(--border);
   }
 
   .feature-grid {
@@ -943,10 +955,10 @@
     </div>
   </section>
 
-  <section class="process" id="process">
+  <section class="capabilities" id="process">
     <div class="section-head">
       <h2>Three seats, one ruling</h2>
-      <p>Every round runs the same way — no API keys, no separate accounts, just the sessions you're already signed into.</p>
+      <p>Every round runs the same way — no API keys, no separate accounts, just the sessions you're already signed into. Built to hold up as a daily habit, not a one-off demo.</p>
     </div>
     <div class="steps">
       <div class="step" data-tone="mix">
@@ -968,13 +980,8 @@
         <div class="step-seats"><span class="seat-chip g"></span></div>
       </div>
     </div>
-  </section>
 
-  <section class="features" id="features">
-    <div class="section-head">
-      <h2>Built for actually using it daily</h2>
-      <p>Not a demo — the pieces you'd need to keep three-way answers as a habit instead of a novelty.</p>
-    </div>
+    <div class="subhead" id="features">What you get</div>
     <div class="feature-grid">
       <div class="feature" style="--fcolor: var(--cyan)">
         <h3>Councils</h3>
