@@ -1,0 +1,1066 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Web Councile — Multi-Model Tribunal</title>
+<meta name="description" content="Web Councile — a Chrome extension that broadcasts one prompt to your ChatGPT, Claude, and Gemini sessions, then hands back a consolidated verdict." />
+<style>
+  :root {
+    color-scheme: dark;
+
+    --bg: #05050a;
+    --bg-deep: #020203;
+    --panel: rgba(255, 255, 255, 0.035);
+    --panel-strong: rgba(255, 255, 255, 0.06);
+    --border: rgba(255, 255, 255, 0.09);
+    --border-strong: rgba(255, 255, 255, 0.16);
+    --fg: #e9e9f4;
+    --muted: #83839a;
+    --muted-dim: #5b5b6e;
+
+    --cyan: #00f6ff;
+    --magenta: #ff2ec4;
+    --violet: #9d5cff;
+    --gold: #ffd23f;
+    --teal: #2dd4bf;
+    --red: #ff4d6d;
+
+    --mono: "JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace,
+      "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    background: var(--bg);
+  }
+
+  body {
+    margin: 0;
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.5;
+    overflow-x: hidden;
+  }
+
+  h1, h2, h3 {
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  p {
+    margin: 0;
+  }
+
+  a {
+    color: inherit;
+  }
+
+  ::selection {
+    background: rgba(0, 246, 255, 0.25);
+    color: var(--fg);
+  }
+
+  /* ---------- ambience (lifted from the product itself) ---------- */
+
+  .glow-ambient {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(ellipse 60% 40% at 18% -10%, rgba(0, 246, 255, 0.16), transparent 60%),
+      radial-gradient(ellipse 55% 35% at 50% -5%, rgba(255, 46, 196, 0.13), transparent 60%),
+      radial-gradient(ellipse 60% 40% at 85% -10%, rgba(157, 92, 255, 0.16), transparent 60%),
+      radial-gradient(ellipse 80% 60% at 50% 110%, rgba(255, 210, 63, 0.06), transparent 60%);
+  }
+
+  .scanlines {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    pointer-events: none;
+    mix-blend-mode: overlay;
+    opacity: 0.45;
+    background: repeating-linear-gradient(
+      to bottom,
+      rgba(255, 255, 255, 0.035) 0px,
+      rgba(255, 255, 255, 0.035) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+  }
+
+  .page {
+    position: relative;
+    z-index: 1;
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: 0 28px;
+  }
+
+  /* ---------- nav ---------- */
+
+  .nav {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 22px 28px;
+    max-width: 1120px;
+    margin: 0 auto;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .brand-mark {
+    color: var(--cyan);
+    font-size: 20px;
+    text-shadow: 0 0 8px var(--cyan), 0 0 20px rgba(0, 246, 255, 0.6);
+    animation: flicker 6s infinite;
+  }
+
+  .brand-word {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+  }
+
+  .nav-links {
+    display: flex;
+    align-items: center;
+    gap: 26px;
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+
+  .nav-links a {
+    text-decoration: none;
+    transition: color 0.15s ease;
+  }
+
+  .nav-links a:hover,
+  .nav-links a:focus-visible {
+    color: var(--fg);
+  }
+
+  .nav-links .nav-cta {
+    padding: 8px 14px;
+    border: 1px solid var(--border-strong);
+    border-radius: 7px;
+    color: var(--fg);
+  }
+
+  .nav-links .nav-cta:hover {
+    border-color: var(--teal);
+    color: var(--teal);
+  }
+
+  @media (max-width: 720px) {
+    .nav-links span.sep {
+      display: none;
+    }
+    .nav-links a:not(.nav-cta) {
+      display: none;
+    }
+  }
+
+  /* ---------- hero ---------- */
+
+  .hero {
+    position: relative;
+    padding: 64px 0 40px;
+    display: grid;
+    gap: 18px;
+    justify-items: start;
+    opacity: 0;
+    animation: rise 0.7s ease 0.05s forwards;
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .eyebrow::before {
+    content: "";
+    width: 22px;
+    height: 1px;
+    background: linear-gradient(90deg, var(--cyan), var(--violet));
+  }
+
+  .hero h1 {
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: clamp(38px, 6vw, 64px);
+    line-height: 1.04;
+    letter-spacing: -0.01em;
+    background: linear-gradient(100deg, var(--cyan) 0%, var(--magenta) 45%, var(--violet) 85%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    max-width: 16ch;
+  }
+
+  .hero-sub {
+    font-size: 17px;
+    color: var(--muted);
+    max-width: 54ch;
+  }
+
+  .hero-sub b {
+    color: var(--fg);
+    font-weight: 600;
+  }
+
+  .hero-ctas {
+    display: flex;
+    gap: 12px;
+    margin-top: 6px;
+    flex-wrap: wrap;
+  }
+
+  .btn {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    padding: 12px 20px;
+    border-radius: 8px;
+    border: 1px solid var(--border-strong);
+    background: var(--panel);
+    color: var(--fg);
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease, transform 0.05s ease;
+  }
+
+  .btn:active {
+    transform: translateY(1px);
+  }
+
+  .btn-primary {
+    border-color: var(--cyan);
+    color: var(--cyan);
+  }
+
+  .btn-primary:hover,
+  .btn-primary:focus-visible {
+    background: rgba(0, 246, 255, 0.08);
+    box-shadow: 0 0 20px rgba(0, 246, 255, 0.35);
+  }
+
+  .btn-ghost:hover,
+  .btn-ghost:focus-visible {
+    border-color: var(--fg);
+  }
+
+  a.btn:focus-visible,
+  button:focus-visible {
+    outline: 2px solid var(--teal);
+    outline-offset: 2px;
+  }
+
+  /* ---------- mockup (recreates the real product UI) ---------- */
+
+  .mockup-wrap {
+    margin-top: 44px;
+    width: 100%;
+    opacity: 0;
+    animation: rise 0.7s ease 0.28s forwards;
+  }
+
+  .mockup {
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--bg-deep);
+    box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.02) inset;
+    overflow: hidden;
+  }
+
+  .mockup-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(to bottom, rgba(255, 255, 255, 0.03), transparent);
+  }
+
+  .mockup-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--muted-dim);
+  }
+
+  .mockup-title {
+    margin-left: 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    color: var(--muted-dim);
+  }
+
+  .mock-composer {
+    display: flex;
+    gap: 10px;
+    padding: 16px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.012);
+  }
+
+  .mock-prompt {
+    flex: 1;
+    padding: 12px 15px;
+    border-radius: 9px;
+    border: 1px solid var(--border-strong);
+    background: var(--panel);
+    color: var(--fg);
+    font-size: 13.5px;
+    line-height: 1.5;
+    box-shadow: 0 0 0 1px rgba(0, 246, 255, 0.14), 0 0 18px rgba(0, 246, 255, 0.1);
+  }
+
+  .mock-send {
+    align-self: stretch;
+    flex: none;
+    width: 42px;
+    border-radius: 9px;
+    border: 1px solid var(--cyan);
+    color: var(--cyan);
+    background: rgba(0, 246, 255, 0.08);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+  }
+
+  .mockup-cols {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    background: var(--border);
+  }
+
+  .mcol {
+    background: var(--bg-deep);
+    border-top: 2px solid transparent;
+    min-width: 0;
+  }
+
+  .mcol[data-seat="chatgpt"] { border-top-color: var(--cyan); }
+  .mcol[data-seat="claude"] { border-top-color: var(--magenta); }
+  .mcol[data-seat="gemini"] { border-top-color: var(--violet); }
+
+  .mcol-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.015);
+  }
+
+  .mseat-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex: none;
+  }
+
+  .mcol[data-seat="chatgpt"] .mseat-dot { background: var(--cyan); box-shadow: 0 0 6px var(--cyan); }
+  .mcol[data-seat="claude"] .mseat-dot { background: var(--magenta); box-shadow: 0 0 6px var(--magenta); }
+  .mcol[data-seat="gemini"] .mseat-dot { background: var(--violet); box-shadow: 0 0 6px var(--violet); }
+
+  .mcol-name {
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: 11.5px;
+  }
+
+  .mstatus {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.03em;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--muted);
+  }
+
+  .mstatus.done { background: rgba(45, 212, 191, 0.14); color: var(--teal); }
+  .mstatus.live { background: rgba(255, 210, 63, 0.14); color: var(--gold); }
+
+  .mresponse {
+    padding: 14px;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--muted);
+    min-height: 128px;
+  }
+
+  .mresponse b {
+    color: var(--fg);
+    font-weight: 500;
+  }
+
+  .cursor {
+    display: inline-block;
+    width: 6px;
+    height: 13px;
+    background: var(--gold);
+    margin-left: 2px;
+    vertical-align: -2px;
+    animation: blink 1s step-end infinite;
+  }
+
+  .mverdict {
+    border-top: 2px solid var(--gold);
+    background: linear-gradient(to bottom, rgba(255, 210, 63, 0.06), var(--bg-deep) 45%);
+    padding: 14px 16px 18px;
+  }
+
+  .mverdict-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .mverdict-head .mseat-dot {
+    background: var(--gold);
+    box-shadow: 0 0 6px var(--gold);
+  }
+
+  .mverdict-name {
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: 11.5px;
+    color: var(--gold);
+  }
+
+  .mverdict p {
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--fg);
+    max-width: 72ch;
+  }
+
+  @media (max-width: 760px) {
+    .mockup-cols { grid-template-columns: 1fr; }
+    .mresponse { min-height: 0; }
+  }
+
+  /* ---------- process ---------- */
+
+  .process {
+    padding: 64px 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .section-head {
+    display: grid;
+    gap: 8px;
+    margin-bottom: 40px;
+    max-width: 60ch;
+  }
+
+  .section-head h2 {
+    font-family: var(--mono);
+    font-size: clamp(22px, 3vw, 28px);
+    letter-spacing: -0.01em;
+  }
+
+  .section-head p {
+    color: var(--muted);
+    font-size: 15px;
+  }
+
+  .steps {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  .step {
+    background: var(--bg-deep);
+    padding: 26px 22px;
+    display: grid;
+    gap: 10px;
+    border-top: 2px solid transparent;
+  }
+
+  .step[data-tone="mix"] { border-top-image: linear-gradient(90deg, var(--cyan), var(--magenta), var(--violet)) 1; }
+  .step[data-tone="gold"] { border-top-color: var(--gold); }
+
+  .step-label {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .step h3 {
+    font-size: 17px;
+    font-weight: 600;
+  }
+
+  .step p {
+    color: var(--muted);
+    font-size: 13.5px;
+    line-height: 1.55;
+  }
+
+  .step-seats {
+    display: flex;
+    gap: 6px;
+    margin-top: 2px;
+  }
+
+  .seat-chip {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+
+  .seat-chip.c { background: var(--cyan); box-shadow: 0 0 5px var(--cyan); }
+  .seat-chip.m { background: var(--magenta); box-shadow: 0 0 5px var(--magenta); }
+  .seat-chip.v { background: var(--violet); box-shadow: 0 0 5px var(--violet); }
+  .seat-chip.g { background: var(--gold); box-shadow: 0 0 5px var(--gold); }
+
+  @media (max-width: 760px) {
+    .steps { grid-template-columns: 1fr; }
+  }
+
+  /* ---------- features ---------- */
+
+  .features {
+    padding: 64px 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .feature-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+  }
+
+  .feature {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px 20px;
+    background: var(--panel);
+    border-top: 2px solid var(--fcolor, var(--border-strong));
+    transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+  }
+
+  .feature:hover {
+    background: var(--panel-strong);
+    transform: translateY(-2px);
+  }
+
+  .feature h3 {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .feature h3::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--fcolor, var(--muted));
+    box-shadow: 0 0 6px var(--fcolor, transparent);
+    flex: none;
+  }
+
+  .feature p {
+    font-size: 13.5px;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+
+  @media (max-width: 900px) {
+    .feature-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 600px) {
+    .feature-grid { grid-template-columns: 1fr; }
+  }
+
+  /* ---------- install / get started ---------- */
+
+  .install {
+    padding: 64px 0 80px;
+    border-top: 1px solid var(--border);
+  }
+
+  .install-time {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    margin-top: 4px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: 0.04em;
+    color: var(--teal);
+  }
+
+  .install-time::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--teal);
+    box-shadow: 0 0 6px var(--teal);
+  }
+
+  .install-steps {
+    display: grid;
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 28px;
+  }
+
+  .install-step {
+    background: var(--bg-deep);
+    padding: 22px 24px;
+    display: grid;
+    grid-template-columns: 40px 1fr;
+    gap: 18px;
+    align-items: start;
+  }
+
+  .install-num {
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 14px;
+    background: color-mix(in srgb, var(--scolor) 14%, transparent);
+    color: var(--scolor);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--scolor) 35%, transparent);
+  }
+
+  .install-step[data-tone="cyan"] { --scolor: var(--cyan); }
+  .install-step[data-tone="magenta"] { --scolor: var(--magenta); }
+  .install-step[data-tone="violet"] { --scolor: var(--violet); }
+  .install-step[data-tone="gold"] { --scolor: var(--gold); }
+
+  .install-step h3 {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+
+  .install-step p {
+    font-size: 13.5px;
+    color: var(--muted);
+    line-height: 1.6;
+    max-width: 58ch;
+  }
+
+  .install-step p b {
+    color: var(--fg);
+    font-weight: 600;
+  }
+
+  .install-step .aside {
+    display: block;
+    margin-top: 6px;
+    font-size: 12.5px;
+    color: var(--muted-dim);
+  }
+
+  code, .inline-code {
+    font-family: var(--mono);
+    font-size: 0.92em;
+    color: var(--cyan);
+    background: rgba(0, 246, 255, 0.08);
+    padding: 2px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+
+  .inline-code {
+    display: inline-block;
+    margin-top: 8px;
+    padding: 6px 10px;
+    font-size: 12.5px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  @media (max-width: 640px) {
+    .install-step {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .requirements {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--panel);
+    padding: 20px 24px;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 8px 24px;
+    align-items: start;
+  }
+
+  .requirements-label {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    white-space: nowrap;
+    padding-top: 3px;
+  }
+
+  .req-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 9px;
+    font-size: 13.5px;
+  }
+
+  .req-list li {
+    display: flex;
+    align-items: baseline;
+    gap: 9px;
+  }
+
+  .req-list li::before {
+    content: "\2713";
+    color: var(--teal);
+    font-size: 11px;
+    flex: none;
+  }
+
+  .req-list b {
+    color: var(--fg);
+    font-weight: 600;
+  }
+
+  @media (max-width: 640px) {
+    .requirements {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  /* ---------- footer ---------- */
+
+  .footer {
+    border-top: 1px solid var(--border);
+    padding: 26px 0 40px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--muted-dim);
+  }
+
+  .footer a {
+    color: var(--muted);
+    text-decoration: none;
+  }
+
+  .footer a:hover {
+    color: var(--teal);
+  }
+
+  /* ---------- motion ---------- */
+
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(14px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes flicker {
+    0%, 96%, 100% { opacity: 1; }
+    97% { opacity: 0.4; }
+    98% { opacity: 1; }
+    99% { opacity: 0.6; }
+  }
+
+  @keyframes blink {
+    0%, 49% { opacity: 1; }
+    50%, 100% { opacity: 0; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .hero, .mockup-wrap, .brand-mark, .cursor {
+      animation: none !important;
+      opacity: 1 !important;
+    }
+  }
+</style>
+</head>
+<body>
+
+<div class="glow-ambient" aria-hidden="true"></div>
+<div class="scanlines" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="brand">
+    <span class="brand-mark">&#9670;</span>
+    <span class="brand-word">WEB&nbsp;COUNCILE</span>
+  </div>
+  <div class="nav-links">
+    <a href="#process">How it works</a>
+    <span class="sep">&middot;</span>
+    <a href="#features">Features</a>
+    <span class="sep">&middot;</span>
+    <a href="#install">Install</a>
+    <a class="nav-cta" href="https://github.com/liorA2102/web-councile" target="_blank" rel="noopener">Source</a>
+  </div>
+</nav>
+
+<main class="page">
+  <section class="hero">
+    <div class="eyebrow">Chrome extension &middot; multi-model tribunal</div>
+    <h1>Convene the council.</h1>
+    <p class="hero-sub">
+      Write a prompt once. Web Councile sends it straight into your own
+      logged-in <b>ChatGPT</b>, <b>Claude</b>, and <b>Gemini</b> tabs at the
+      same time — then asks one of them to hand down a single
+      <b>consolidated verdict</b>.
+    </p>
+    <div class="hero-ctas">
+      <a class="btn btn-primary" href="#install">Load it locally</a>
+      <a class="btn btn-ghost" href="https://github.com/liorA2102/web-councile" target="_blank" rel="noopener">View source &rarr;</a>
+    </div>
+
+    <div class="mockup-wrap">
+      <div class="mockup">
+        <div class="mockup-bar">
+          <span class="mockup-dot"></span><span class="mockup-dot"></span><span class="mockup-dot"></span>
+          <span class="mockup-title">New round</span>
+        </div>
+        <div class="mock-composer">
+          <div class="mock-prompt">Should I use Postgres or MongoDB for a real-time analytics dashboard?</div>
+          <div class="mock-send">&#10148;</div>
+        </div>
+        <div class="mockup-cols">
+          <div class="mcol" data-seat="chatgpt">
+            <div class="mcol-head">
+              <span class="mseat-dot"></span>
+              <span class="mcol-name">ChatGPT</span>
+              <span class="mstatus done">Done</span>
+            </div>
+            <div class="mresponse">
+              <b>Postgres.</b> Real-time analytics reads benefit from mature
+              window functions and materialized views; Mongo's aggregation
+              pipeline gets you there but with more operational surprises
+              at scale.
+            </div>
+          </div>
+          <div class="mcol" data-seat="claude">
+            <div class="mcol-head">
+              <span class="mseat-dot"></span>
+              <span class="mcol-name">Claude</span>
+              <span class="mstatus done">Done</span>
+            </div>
+            <div class="mresponse">
+              Depends on write shape. If events are append-only and
+              schema-loose, Mongo's flexibility saves migrations early on —
+              but I'd still reach for <b>Postgres + TimescaleDB</b> first.
+            </div>
+          </div>
+          <div class="mcol" data-seat="gemini">
+            <div class="mcol-head">
+              <span class="mseat-dot"></span>
+              <span class="mcol-name">Gemini</span>
+              <span class="mstatus live">Streaming</span>
+            </div>
+            <div class="mresponse">
+              For a dashboard specifically, the deciding factor is your
+              query patterns — rollups and joins point hard at
+              Postgres<span class="cursor"></span>
+            </div>
+          </div>
+        </div>
+        <div class="mverdict">
+          <div class="mverdict-head">
+            <span class="mseat-dot"></span>
+            <span class="mverdict-name">Consolidated Verdict &middot; via Claude</span>
+          </div>
+          <p>
+            All three converge on Postgres unless your writes are genuinely
+            schema-loose and append-only. For a real-time analytics
+            dashboard, start with <b>Postgres (TimescaleDB for the
+            time-series load)</b> — reach for Mongo only if your event
+            shape is still changing weekly.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="process" id="process">
+    <div class="section-head">
+      <h2>Three seats, one ruling</h2>
+      <p>Every round runs the same way — no API keys, no separate accounts, just the sessions you're already signed into.</p>
+    </div>
+    <div class="steps">
+      <div class="step" data-tone="mix">
+        <div class="step-label">01 &middot; Broadcast</div>
+        <h3>One prompt, three tabs</h3>
+        <p>Type it once. It's inserted and submitted in your existing ChatGPT, Claude, and Gemini tabs — or fresh ones if you don't have them open.</p>
+        <div class="step-seats"><span class="seat-chip c"></span><span class="seat-chip m"></span><span class="seat-chip v"></span></div>
+      </div>
+      <div class="step" data-tone="mix">
+        <div class="step-label">02 &middot; Independent answers</div>
+        <h3>Each model, undisturbed</h3>
+        <p>They answer exactly as they would if you'd asked them yourself — Web Councile just watches for when each one is actually done.</p>
+        <div class="step-seats"><span class="seat-chip c"></span><span class="seat-chip m"></span><span class="seat-chip v"></span></div>
+      </div>
+      <div class="step" data-tone="gold">
+        <div class="step-label">03 &middot; Verdict</div>
+        <h3>A judge, not a group chat</h3>
+        <p>Once two or more finish, your chosen judge model reads all the answers in a session of its own and hands back one merged verdict.</p>
+        <div class="step-seats"><span class="seat-chip g"></span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="features" id="features">
+    <div class="section-head">
+      <h2>Built for actually using it daily</h2>
+      <p>Not a demo — the pieces you'd need to keep three-way answers as a habit instead of a novelty.</p>
+    </div>
+    <div class="feature-grid">
+      <div class="feature" style="--fcolor: var(--cyan)">
+        <h3>Councils</h3>
+        <p>Save named sets of pinned conversations and switch between them from a searchable dropdown — a "Research" council and a "Quick Answers" council can coexist.</p>
+      </div>
+      <div class="feature" style="--fcolor: var(--teal)">
+        <h3>Auto-pinning</h3>
+        <p>The first message in a fresh chat captures its real conversation URL automatically. No copy-pasting links to keep a council pointed at the right threads.</p>
+      </div>
+      <div class="feature" style="--fcolor: var(--gold)">
+        <h3>Independent judge</h3>
+        <p>Consolidation runs in its own dedicated session — separate from any member's conversation — so it never appends a "merge these answers" turn where it doesn't belong.</p>
+      </div>
+      <div class="feature" style="--fcolor: var(--magenta)">
+        <h3>Auto-consolidate</h3>
+        <p>On by default: the moment two members finish, the verdict fires on its own. Flip it off any time and consolidate manually instead.</p>
+      </div>
+      <div class="feature" style="--fcolor: var(--violet)">
+        <h3>Model control</h3>
+        <p>Pin a preferred model tier per seat, or leave it blank to automatically reach for the most capable option a fresh chat offers.</p>
+      </div>
+      <div class="feature" style="--fcolor: var(--muted)">
+        <h3>CRM webhook</h3>
+        <p>Optionally POST the prompt, every answer, and the verdict to your own endpoint — a HubSpot flow, a Zapier hook, or anything that takes JSON.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="install" id="install">
+    <div class="section-head">
+      <h2>How to get it</h2>
+      <p>
+        Web Councile runs as a local, unpacked extension — it drives your
+        own logged-in ChatGPT, Claude, and Gemini tabs directly, no API key
+        required.
+      </p>
+      <span class="install-time">About 2 minutes, four steps</span>
+    </div>
+
+    <div class="install-steps">
+      <div class="install-step" data-tone="cyan">
+        <div class="install-num">1</div>
+        <div>
+          <h3>Get the code</h3>
+          <p>Clone the repository, or download it as a ZIP and unpack it anywhere on your machine.</p>
+          <span class="inline-code">git clone github.com/liorA2102/web-councile</span>
+        </div>
+      </div>
+      <div class="install-step" data-tone="magenta">
+        <div class="install-num">2</div>
+        <div>
+          <h3>Turn on Developer Mode</h3>
+          <p>Open <code>chrome://extensions</code> and flip the <b>Developer mode</b> toggle in the top-right corner.</p>
+        </div>
+      </div>
+      <div class="install-step" data-tone="violet">
+        <div class="install-num">3</div>
+        <div>
+          <h3>Load it unpacked</h3>
+          <p>Click <b>Load unpacked</b> and select the <code>web-councile</code> folder you just downloaded.</p>
+        </div>
+      </div>
+      <div class="install-step" data-tone="gold">
+        <div class="install-num">4</div>
+        <div>
+          <h3>Convene your first council</h3>
+          <p>Click the toolbar icon, sign into whichever of ChatGPT, Claude, or Gemini you want seated, and send your first prompt.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="requirements">
+      <div class="requirements-label">Requirements</div>
+      <ul class="req-list">
+        <li>Chrome, or any Chromium-based browser</li>
+        <li><b>Developer mode</b> enabled — one toggle, covered in step 2</li>
+        <li>An active, logged-in session for whichever services you seat</li>
+        <li>Nothing else — no accounts, no API keys, no telemetry</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <span>&#9670; Web Councile &mdash; multi-model tribunal</span>
+    <a href="https://github.com/liorA2102/web-councile" target="_blank" rel="noopener">github.com/liorA2102/web-councile</a>
+  </footer>
+</main>
+</body>
+</html>
