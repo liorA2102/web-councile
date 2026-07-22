@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Web Councile",
+  "version": "0.1.0",
+  "description": "Write a prompt once, send it to your open ChatGPT, Claude, and Gemini sessions, and see all three answers in one window.",
+  "permissions": ["scripting", "tabs", "storage"],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://claude.ai/*",
+    "https://gemini.google.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_title": "Open Web Councile"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

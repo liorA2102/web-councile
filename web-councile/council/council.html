@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Web Councile</title>
+    <link rel="stylesheet" href="council.css" />
+  </head>
+  <body>
+    <div class="scanlines" aria-hidden="true"></div>
+    <div class="glow-ambient" aria-hidden="true"></div>
+
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">&#9670;</span>
+        <div class="brand-text">
+          <h1>WEB&nbsp;COUNCILE</h1>
+          <span class="brand-sub">multi&#8209;model tribunal</span>
+        </div>
+      </div>
+      <div class="toolbar">
+        <div class="council-picker" id="council-picker">
+          <button
+            id="council-picker-btn"
+            class="btn btn-ghost"
+            type="button"
+            title="Switch council (also opens/focuses its pinned tabs)"
+          >
+            <span data-role="council-name">My Council</span> &#9662;
+          </button>
+          <div id="council-picker-panel" class="council-picker-panel" hidden>
+            <input
+              id="council-search"
+              type="text"
+              placeholder="Search councils&#8230;"
+              autocomplete="off"
+            />
+            <ul id="council-list" class="council-list"></ul>
+          </div>
+        </div>
+        <button
+          id="session-settings"
+          class="icon-btn"
+          type="button"
+          title="Pin session links"
+          aria-label="Pin session links"
+        >
+          &#128279;
+        </button>
+        <button
+          id="new-council"
+          class="btn btn-ghost"
+          type="button"
+          title="Start a new council: creates a new named council and opens fresh chats for the 3 members"
+        >
+          <span class="btn-plus">&#43;</span> New council
+        </button>
+        <button
+          id="crm-settings"
+          class="icon-btn"
+          type="button"
+          title="CRM connection settings"
+          aria-label="CRM connection settings"
+        >
+          &#9881;
+        </button>
+        <button id="crm-send" class="btn btn-crm" type="button" disabled>
+          <span class="btn-dot" data-role="crm-dot"></span>
+          <span data-role="crm-label">Update CRM</span>
+        </button>
+      </div>
+    </header>
+
+    <section class="composer">
+      <textarea
+        id="prompt"
+        placeholder="Address the council&#8230;"
+        rows="1"
+      ></textarea>
+      <button
+        id="send"
+        class="btn-icon btn-send"
+        type="button"
+        title="Send (Enter)"
+        aria-label="Send"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="18"
+          height="18"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M22 2 11 13" />
+          <path d="M22 2 15 22l-4-9-9-4Z" />
+        </svg>
+      </button>
+    </section>
+
+    <div class="roster" role="group" aria-label="Council members">
+      <button
+        class="member-toggle"
+        data-service="chatgpt"
+        type="button"
+        aria-pressed="true"
+      >
+        <span class="seat-dot"></span>ChatGPT
+      </button>
+      <button
+        class="member-toggle"
+        data-service="claude"
+        type="button"
+        aria-pressed="true"
+      >
+        <span class="seat-dot"></span>Claude
+      </button>
+      <button
+        class="member-toggle"
+        data-service="gemini"
+        type="button"
+        aria-pressed="true"
+      >
+        <span class="seat-dot"></span>Gemini
+      </button>
+    </div>
+
+    <main class="columns">
+      <section class="column" data-service="chatgpt">
+        <div class="column-header">
+          <span class="seat-dot"></span>
+          <span class="name">ChatGPT</span>
+          <span class="status" data-role="status">Idle</span>
+        </div>
+        <div class="response" data-role="response"></div>
+      </section>
+
+      <section class="column" data-service="claude">
+        <div class="column-header">
+          <span class="seat-dot"></span>
+          <span class="name">Claude</span>
+          <span class="status" data-role="status">Idle</span>
+        </div>
+        <div class="response" data-role="response"></div>
+      </section>
+
+      <section class="column" data-service="gemini">
+        <div class="column-header">
+          <span class="seat-dot"></span>
+          <span class="name">Gemini</span>
+          <span class="status" data-role="status">Idle</span>
+        </div>
+        <div class="response" data-role="response"></div>
+      </section>
+    </main>
+
+    <section class="verdict" data-service="consolidated">
+      <div class="verdict-header">
+        <button
+          id="verdict-toggle"
+          class="verdict-chevron"
+          type="button"
+          aria-expanded="false"
+          aria-controls="verdict-body"
+          title="Expand/collapse verdict"
+        >
+          &#9662;
+        </button>
+        <span class="seat-dot"></span>
+        <span class="name">Consolidated&nbsp;Verdict</span>
+        <span class="status" data-role="status">Awaiting quorum</span>
+        <label
+          class="auto-toggle"
+          title="Automatically consolidate once at least two members finish"
+        >
+          <input type="checkbox" id="auto-consolidate" checked />
+          Auto
+        </label>
+        <button
+          id="consolidate"
+          class="btn btn-consolidate"
+          type="button"
+          disabled
+        >
+          &#9889; Consolidate
+        </button>
+      </div>
+      <div id="verdict-body" class="verdict-body">
+        <div class="response" data-role="response"></div>
+      </div>
+    </section>
+
+    <dialog id="session-modal">
+      <form method="dialog" class="crm-form">
+        <h2>Pinned sessions</h2>
+        <p class="crm-hint">
+          Paste the exact conversation URL you want a council to always use
+          for each service. If a tab with that conversation is already open,
+          it's reused as-is; otherwise a new tab is opened straight to that
+          link. Leave a field blank to fall back to "whichever tab is open."
+          Auto-filled automatically once a fresh council's first prompt is
+          sent — you don't need to fill these in by hand.
+        </p>
+        <p class="crm-hint">
+          Preferred model only applies when a brand-new chat is opened for
+          that seat (an existing/reused conversation already has its model
+          locked in). Leave blank to automatically pick the most
+          capable/advanced option available; type "default" to leave the
+          site's own default alone; or type part of a model's name (e.g.
+          "Opus", "Pro", "Thinking") to match it.
+        </p>
+        <label>Editing council</label>
+        <div class="council-picker" id="settings-council-picker">
+          <button type="button" id="settings-council-btn" class="btn btn-ghost council-picker-btn">
+            <span data-role="settings-council-name">My Council</span> &#9662;
+          </button>
+          <div id="settings-council-panel" class="council-picker-panel" hidden>
+            <ul id="settings-council-list" class="council-list"></ul>
+          </div>
+        </div>
+        <label for="session-chatgpt">ChatGPT conversation URL</label>
+        <input
+          id="session-chatgpt"
+          type="url"
+          placeholder="https://chatgpt.com/c/&#8230;"
+          autocomplete="off"
+        />
+        <label for="session-chatgpt-model">ChatGPT preferred model (optional)</label>
+        <input
+          id="session-chatgpt-model"
+          type="text"
+          placeholder="Blank = most advanced"
+          autocomplete="off"
+        />
+        <label for="session-claude">Claude conversation URL</label>
+        <input
+          id="session-claude"
+          type="url"
+          placeholder="https://claude.ai/chat/&#8230;"
+          autocomplete="off"
+        />
+        <label for="session-claude-model">Claude preferred model (optional)</label>
+        <input
+          id="session-claude-model"
+          type="text"
+          placeholder="Blank = most advanced"
+          autocomplete="off"
+        />
+        <label for="session-gemini">Gemini conversation URL</label>
+        <input
+          id="session-gemini"
+          type="url"
+          placeholder="https://gemini.google.com/app/&#8230;"
+          autocomplete="off"
+        />
+        <label for="session-gemini-model">Gemini preferred model (optional)</label>
+        <input
+          id="session-gemini-model"
+          type="text"
+          placeholder="Blank = most advanced"
+          autocomplete="off"
+        />
+
+        <h2>Consolidation judge</h2>
+        <p class="crm-hint">
+          Consolidation runs in its own dedicated session, separate from the
+          members above, so it never appends a "merge these answers" turn
+          into one of your real conversations. Pick which service judges, and
+          optionally pin its own conversation URL and preferred model the
+          same way.
+        </p>
+        <label for="judge-service">Judge service</label>
+        <select id="judge-service">
+          <option value="chatgpt">ChatGPT</option>
+          <option value="claude">Claude</option>
+          <option value="gemini">Gemini</option>
+        </select>
+        <label for="judge-url">Judge conversation URL (optional)</label>
+        <input
+          id="judge-url"
+          type="url"
+          placeholder="Auto-pins itself after first use if left blank"
+          autocomplete="off"
+        />
+        <label for="judge-model">Judge preferred model (optional)</label>
+        <input
+          id="judge-model"
+          type="text"
+          placeholder="Blank = most advanced"
+          autocomplete="off"
+        />
+        <div class="crm-form-actions">
+          <button id="session-cancel" type="button" class="btn btn-ghost">
+            Cancel
+          </button>
+          <button id="session-save" type="submit" class="btn btn-crm">
+            Save
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="crm-modal">
+      <form method="dialog" class="crm-form">
+        <h2>CRM connection</h2>
+        <p class="crm-hint">
+          Answers are POSTed as JSON to this endpoint. Point it at your CRM's
+          inbound webhook (HubSpot workflow webhook, Salesforce Flow HTTP
+          action, Zapier/Make/n8n catch hook, or an internal API).
+        </p>
+        <label for="crm-url">Webhook / API URL</label>
+        <input
+          id="crm-url"
+          type="url"
+          placeholder="https://your-crm.example.com/hooks/council"
+          autocomplete="off"
+        />
+        <label for="crm-key">API key / bearer token (optional)</label>
+        <input
+          id="crm-key"
+          type="password"
+          placeholder="sk_live_&#8230;"
+          autocomplete="off"
+        />
+        <div class="crm-form-actions">
+          <button id="crm-cancel" type="button" class="btn btn-ghost">
+            Cancel
+          </button>
+          <button id="crm-save" type="submit" class="btn btn-crm">
+            Save
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="../shared/constants.js"></script>
+    <script src="council.js"></script>
+  </body>
+</html>

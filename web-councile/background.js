@@ -1,0 +1,436 @@
+importScripts("shared/constants.js");
+
+const {
+  SERVICES,
+  MSG_BROADCAST_PROMPT,
+  MSG_CONSOLIDATE,
+  MSG_OPEN_SESSIONS,
+  MSG_NEW_COUNCIL,
+  MSG_RUN_PROMPT,
+  MSG_SET_MODEL,
+  MSG_STATUS_UPDATE,
+  PORT_COUNCIL,
+  DEFAULT_JUDGE_SERVICE,
+  STATUS,
+} = self.WC_CONSTANTS;
+
+let councilWindowId = null;
+let councilPort = null;
+
+// Service key currently being re-run for consolidation (see consolidate()
+// below), or null. While set, relayToCouncil() rewrites status updates for
+// that service to service "consolidated" so they land on the verdict panel
+// instead of overwriting that model's own column.
+let consolidationActive = null;
+
+const CONSOLIDATION_TERMINAL = new Set([
+  STATUS.DONE,
+  STATUS.ERROR,
+  STATUS.NOT_SIGNED_IN,
+]);
+
+const TAB_LOAD_TIMEOUT_MS = 20000;
+
+function log(...args) {
+  console.log("[WebCouncile:background]", ...args);
+}
+
+chrome.action.onClicked.addListener(async () => {
+  if (councilWindowId !== null) {
+    try {
+      await chrome.windows.update(councilWindowId, { focused: true });
+      return;
+    } catch (_e) {
+      // Window was closed by the user; fall through and make a new one.
+      councilWindowId = null;
+    }
+  }
+  const win = await chrome.windows.create({
+    url: chrome.runtime.getURL("council/council.html"),
+    type: "popup",
+    width: 980,
+    height: 700,
+  });
+  councilWindowId = win.id;
+});
+
+chrome.windows.onRemoved.addListener((closedId) => {
+  if (closedId === councilWindowId) councilWindowId = null;
+});
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== PORT_COUNCIL) return;
+  councilPort = port;
+  port.onMessage.addListener((message) => handleCouncilMessage(message));
+  port.onDisconnect.addListener(() => {
+    if (councilPort === port) councilPort = null;
+  });
+});
+
+// Content scripts report progress with one-shot runtime messages (they run in
+// a different execution context per tab and don't hold a port reference).
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type !== MSG_STATUS_UPDATE) return;
+  relayToCouncil(message);
+});
+
+function relayToCouncil(message) {
+  if (!councilPort) return;
+  try {
+    councilPort.postMessage(remapForConsolidation(message));
+  } catch (_e) {
+    councilPort = null;
+  }
+}
+
+// Every status update — whether synthesized directly in background.js
+// (WAITING/SENDING) or relayed from a content script (STREAMING/DONE/etc.)
+// — passes through relayToCouncil, so this is the single place that needs
+// to know about an in-flight consolidation run.
+function remapForConsolidation(message) {
+  if (
+    message?.type !== MSG_STATUS_UPDATE ||
+    message.service !== consolidationActive
+  ) {
+    return message;
+  }
+  if (CONSOLIDATION_TERMINAL.has(message.status)) consolidationActive = null;
+  return { ...message, service: "consolidated" };
+}
+
+function handleCouncilMessage(message) {
+  if (message?.type === MSG_BROADCAST_PROMPT) {
+    broadcastPrompt(message.text, message.services);
+  } else if (message?.type === MSG_CONSOLIDATE) {
+    consolidate(message.via, message.prompt);
+  } else if (message?.type === MSG_OPEN_SESSIONS) {
+    openSessions();
+  } else if (message?.type === MSG_NEW_COUNCIL) {
+    newCouncil();
+  }
+}
+
+// Opens/focuses a tab per seat and brings each to the front, for the user's
+// explicit "reopen my council" action (as opposed to the quiet,
+// non-focus-stealing tab creation broadcastPrompt/consolidate do on their
+// own). Only opens the consolidation seat if it's actually pinned yet —
+// unlike the 3 members, it has no "default new chat" to fall back to here.
+async function openSessions() {
+  for (const serviceKey of Object.keys(SERVICES)) {
+    await focusSeat(serviceKey, SERVICES[serviceKey], serviceKey);
+  }
+  const judgeService = await getJudgeService();
+  if (await getPinnedUrl("consolidation")) {
+    await focusSeat(judgeService, SERVICES[judgeService], "consolidation");
+  }
+}
+
+async function focusSeat(serviceKey, service, storageKey) {
+  try {
+    const { tabId } = await getOrCreateTab(serviceKey, service, storageKey);
+    const tab = await chrome.tabs.update(tabId, { active: true });
+    if (tab?.windowId != null) {
+      await chrome.windows.update(tab.windowId, { focused: true });
+    }
+  } catch (err) {
+    log(storageKey, "focusSeat failed:", err);
+  }
+}
+
+// Opens a fresh "new chat" tab for each member of a brand-new council.
+// council.js has already created and activated the (blank) council entry
+// before sending this, so there's nothing to clear here — just open tabs.
+// Consolidation isn't opened here — it pins itself automatically the first
+// time Consolidate is used against this new council (see capturePinnedUrl).
+async function newCouncil() {
+  for (const serviceKey of Object.keys(SERVICES)) {
+    try {
+      const service = SERVICES[serviceKey];
+      const tab = await chrome.tabs.create({ url: service.url, active: true });
+      await waitForTabComplete(tab.id);
+      if (tab.windowId != null) {
+        await chrome.windows.update(tab.windowId, { focused: true });
+      }
+    } catch (err) {
+      log(serviceKey, "newCouncil failed:", err);
+    }
+  }
+}
+
+// `services` is the council's current roster (members the user hasn't
+// toggled off); falls back to everyone if the caller didn't specify one.
+function broadcastPrompt(prompt, services) {
+  const serviceKeys =
+    Array.isArray(services) && services.length
+      ? services.filter((key) => SERVICES[key])
+      : Object.keys(SERVICES);
+  log(
+    "broadcast requested:",
+    JSON.stringify(prompt).slice(0, 120),
+    "-> ",
+    serviceKeys.join(", "),
+  );
+  for (const serviceKey of serviceKeys) {
+    runForService(serviceKey, prompt).catch((err) => {
+      log(serviceKey, "runForService failed:", err);
+      relayToCouncil({
+        type: MSG_STATUS_UPDATE,
+        service: serviceKey,
+        status: STATUS.ERROR,
+        text: String(err?.message || err),
+      });
+    });
+  }
+}
+
+// Consolidation is its own independent seat — a dedicated session that never
+// touches any member's own conversation — so it always runs against
+// storageKey "consolidation" regardless of which underlying service is
+// judging. `via` (which service judges) is chosen by the user in settings
+// (falls back to DEFAULT_JUDGE_SERVICE) and passed in by council.js.
+function consolidate(via, prompt) {
+  if (!SERVICES[via]) {
+    log("consolidate: unknown service", via);
+    return;
+  }
+  log(via, "consolidation requested:", JSON.stringify(prompt).slice(0, 120));
+  consolidationActive = via;
+  runForService(via, prompt, "consolidation").catch((err) => {
+    log(via, "consolidate runForService failed:", err);
+    relayToCouncil({
+      type: MSG_STATUS_UPDATE,
+      service: via,
+      status: STATUS.ERROR,
+      text: String(err?.message || err),
+    });
+  });
+}
+
+async function runForService(serviceKey, prompt, storageKey = serviceKey) {
+  const service = SERVICES[serviceKey];
+
+  relayToCouncil({
+    type: MSG_STATUS_UPDATE,
+    service: serviceKey,
+    status: STATUS.WAITING,
+    text: "Locating tab…",
+  });
+
+  const { tabId, isFresh } = await getOrCreateTab(serviceKey, service, storageKey);
+  log(storageKey, "using tabId", tabId, isFresh ? "(fresh chat)" : "(existing conversation)");
+
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: [
+      "shared/constants.js",
+      "shared/content-helpers.js",
+      service.contentScript,
+    ],
+  });
+  log(storageKey, "content script injected");
+
+  // Model switching only ever happens for a genuinely brand-new chat — an
+  // existing/reused conversation already has its model locked in from
+  // whenever it was first created, so there's nothing to (or that should)
+  // change there.
+  if (isFresh) {
+    const preferredModel = await getPreferredModel(storageKey);
+    relayToCouncil({
+      type: MSG_STATUS_UPDATE,
+      service: serviceKey,
+      status: STATUS.SENDING,
+      text: "Selecting model…",
+    });
+    try {
+      await chrome.tabs.sendMessage(tabId, {
+        type: MSG_SET_MODEL,
+        preferredModel,
+      });
+    } catch (err) {
+      log(storageKey, "model selection failed, continuing anyway:", err);
+    }
+  }
+
+  relayToCouncil({
+    type: MSG_STATUS_UPDATE,
+    service: serviceKey,
+    status: STATUS.SENDING,
+    text: "Submitting prompt…",
+  });
+
+  await chrome.tabs.sendMessage(tabId, {
+    type: MSG_RUN_PROMPT,
+    prompt,
+  });
+  log(storageKey, "MSG_RUN_PROMPT delivered");
+
+  // Give the site a moment to route to its real, permanent conversation URL
+  // (these apps only assign one once a message is actually sent), then pin
+  // it so this same session gets reused next time instead of the council
+  // guessing at "whichever tab happens to be open."
+  setTimeout(() => capturePinnedUrl(storageKey, tabId), 1200);
+}
+
+// Compares two chat URLs ignoring query string/hash (session IDs live in the
+// path) and a trailing slash, so a saved link still matches the tab even if
+// the site appended tracking params or the user copied it with/without a
+// trailing slash.
+function sameConversation(a, b) {
+  try {
+    const ua = new URL(a);
+    const ub = new URL(b);
+    const norm = (p) => p.replace(/\/+$/, "");
+    return ua.origin === ub.origin && norm(ua.pathname) === norm(ub.pathname);
+  } catch (_e) {
+    return false;
+  }
+}
+
+// Multiple councils can be saved (chrome.storage.local key "councils", a map
+// of councilId -> { name, sessionLinks }); "activeCouncilId" says which one
+// is currently in use. council.js owns creating/naming/switching councils —
+// these helpers just read/write whichever one is active, and degrade
+// gracefully (empty session links, i.e. no pins configured) if council.js
+// hasn't initialized one yet.
+async function getActiveSessionLinks() {
+  const { councils, activeCouncilId } = await chrome.storage.local.get([
+    "councils",
+    "activeCouncilId",
+  ]);
+  if (!activeCouncilId || !councils?.[activeCouncilId]) return {};
+  return councils[activeCouncilId].sessionLinks || {};
+}
+
+async function patchActiveSessionLinks(patchFn) {
+  const { councils, activeCouncilId } = await chrome.storage.local.get([
+    "councils",
+    "activeCouncilId",
+  ]);
+  if (!activeCouncilId) return; // no council selected yet; nothing to persist against
+  const all = councils || {};
+  const current = all[activeCouncilId] || { name: "Council", sessionLinks: {} };
+  current.sessionLinks = patchFn(current.sessionLinks || {});
+  all[activeCouncilId] = current;
+  await chrome.storage.local.set({ councils: all });
+}
+
+// Each seat stores { url, model } — members under their own key ("chatgpt"/
+// "claude"/"gemini"), consolidation under "consolidation" as { service, url,
+// model } since it's not tied to one fixed service. storageKey selects which.
+function seatLinks(sessionLinks, storageKey) {
+  return (storageKey === "consolidation" ? sessionLinks.consolidation : sessionLinks[storageKey]) || {};
+}
+
+async function getPinnedUrl(storageKey) {
+  const raw = seatLinks(await getActiveSessionLinks(), storageKey).url;
+  return raw && raw.trim() ? raw.trim() : null;
+}
+
+// Empty string means "no preference configured" — content scripts treat
+// that as "pick the most capable/advanced option available" by default.
+async function getPreferredModel(storageKey) {
+  return (seatLinks(await getActiveSessionLinks(), storageKey).model || "").trim();
+}
+
+async function getJudgeService() {
+  const sessionLinks = await getActiveSessionLinks();
+  const service = sessionLinks.consolidation?.service;
+  return service && SERVICES[service] ? service : DEFAULT_JUDGE_SERVICE;
+}
+
+async function savePinnedUrl(storageKey, url) {
+  await patchActiveSessionLinks((links) => {
+    if (storageKey === "consolidation") {
+      links.consolidation = { ...(links.consolidation || {}), url };
+    } else {
+      links[storageKey] = { ...(links[storageKey] || {}), url };
+    }
+    return links;
+  });
+}
+
+// Reads back a tab's current URL after a run and pins it for next time —
+// this is what makes "New council" self-pinning: the first real message
+// sent to a fresh chat captures its now-permanent conversation URL, no
+// manual copy/paste required.
+async function capturePinnedUrl(storageKey, tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab?.url) return;
+    await savePinnedUrl(storageKey, tab.url);
+    log(storageKey, "auto-pinned session ->", tab.url);
+  } catch (_e) {
+    // Tab may have been closed in the meantime; nothing to pin.
+  }
+}
+
+// Returns { tabId, isFresh }. isFresh is true only for a genuinely blank,
+// just-created chat (no pinned URL existed, so there's nothing to reopen) —
+// that's the one case where trying to switch the site's model makes sense;
+// a reused tab or a reopened pinned conversation already has messages (and
+// therefore an already-locked-in model), so isFresh is false for those.
+async function getOrCreateTab(serviceKey, service, storageKey = serviceKey) {
+  const pinnedUrl = await getPinnedUrl(storageKey);
+  const tabs = await chrome.tabs.query({ url: service.urlPattern });
+
+  if (pinnedUrl) {
+    const pinnedTab = tabs.find((t) => t.url && sameConversation(t.url, pinnedUrl));
+    if (pinnedTab) {
+      log(storageKey, "found pinned session tab, using", pinnedTab.id);
+      return { tabId: pinnedTab.id, isFresh: false };
+    }
+    log(storageKey, "pinned session not open, opening", pinnedUrl);
+    relayToCouncil({
+      type: MSG_STATUS_UPDATE,
+      service: serviceKey,
+      status: STATUS.NOT_OPEN,
+      text: "Opening pinned session…",
+    });
+    const tab = await chrome.tabs.create({ url: pinnedUrl, active: false });
+    await waitForTabComplete(tab.id);
+    return { tabId: tab.id, isFresh: false };
+  }
+
+  // Consolidation has no "whichever tab is open" fallback — its whole point
+  // is a session dedicated to judging, separate from that service's member
+  // tab. With nothing pinned yet, start it fresh; it'll self-pin above.
+  if (storageKey !== "consolidation") {
+    if (tabs.length > 0) {
+      const active = tabs.find((t) => t.active) || tabs[0];
+      log(storageKey, `found ${tabs.length} existing tab(s), using`, active.id);
+      return { tabId: active.id, isFresh: false };
+    }
+    log(storageKey, "no existing tab, will create one");
+  } else {
+    log(storageKey, "no pinned judge session yet, starting a fresh one");
+  }
+
+  relayToCouncil({
+    type: MSG_STATUS_UPDATE,
+    service: serviceKey,
+    status: STATUS.NOT_OPEN,
+    text: "Opening tab…",
+  });
+
+  const tab = await chrome.tabs.create({ url: service.url, active: false });
+  await waitForTabComplete(tab.id);
+  return { tabId: tab.id, isFresh: true };
+}
+
+function waitForTabComplete(tabId) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      reject(new Error("Timed out waiting for tab to load"));
+    }, TAB_LOAD_TIMEOUT_MS);
+
+    function listener(updatedTabId, changeInfo) {
+      if (updatedTabId === tabId && changeInfo.status === "complete") {
+        clearTimeout(timeout);
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
+    }
+    chrome.tabs.onUpdated.addListener(listener);
+  });
+}
