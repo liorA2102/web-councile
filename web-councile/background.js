@@ -31,20 +31,27 @@ const CONSOLIDATION_TERMINAL = new Set([
 
 const TAB_LOAD_TIMEOUT_MS = 20000;
 
-// Each service gets its own dedicated window, small and never focused, so
-// it doesn't interrupt whatever the user is doing. Chrome pauses
-// rendering-related work like requestAnimationFrame — which these chat
-// sites use internally for their own streaming-text rendering — for a
-// *minimized* window or a tab that isn't the active one in its window; so 3
-// services sharing one window meant only whichever tab was activated last
-// ever actually finished without the user manually clicking over to it.
-// True off-screen placement was the first attempt, but chrome.windows.create
-// hard-rejects bounds that aren't at least 50% within the visible screen
-// ("Invalid value for bounds..."), so full invisibility isn't achievable —
-// this is a small on-screen window instead, cascaded per seat (see
-// seatWindowBounds) so multiple seats don't fully overlap and occlude one
-// another, which would silently reintroduce the same throttling.
-const SEAT_WINDOW_SIZE = { width: 480, height: 360 };
+// Each service gets its own dedicated window, never focused, so it doesn't
+// interrupt whatever the user is doing. Chrome pauses rendering-related
+// work like requestAnimationFrame — which these chat sites use internally
+// for their own streaming-text rendering — for a *minimized* window or a
+// tab that isn't the active one in its window; so 3 services sharing one
+// window meant only whichever tab was activated last ever actually finished
+// without the user manually clicking over to it. True off-screen placement
+// was the first attempt, but chrome.windows.create hard-rejects bounds that
+// aren't at least 50% within the visible screen ("Invalid value for
+// bounds..."), so full invisibility isn't achievable — this is an on-screen
+// window instead, cascaded per seat (see seatWindowBounds) so multiple
+// seats don't fully overlap and occlude one another (which would silently
+// reintroduce the same throttling).
+//
+// Width/height deliberately kept desktop-sized rather than small: a first
+// attempt at 480x360 caused chatgpt.com/claude.ai to render their
+// narrow/compact responsive layout, which uses different DOM structure than
+// our selectors expect (composer not found, assistant-message never
+// appeared) — Gemini tolerated it, these two didn't. Not visually
+// "unobtrusive" at this size, but correctness beats tidiness here.
+const SEAT_WINDOW_SIZE = { width: 1100, height: 800 };
 const SEAT_WINDOW_ORDER = ["chatgpt", "claude", "gemini", "consolidation"];
 const SEAT_WINDOW_CASCADE_STEP = 60;
 
