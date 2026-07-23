@@ -743,6 +743,23 @@
     overflow-wrap: anywhere;
   }
 
+  .get-code-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .get-code-row .inline-code {
+    margin-top: 8px;
+  }
+
+  .btn-sm {
+    padding: 6px 12px;
+    font-size: 11.5px;
+    margin-top: 8px;
+  }
+
   @media (max-width: 640px) {
     .install-step {
       grid-template-columns: 1fr;
@@ -1027,7 +1044,10 @@
         <div>
           <h3>Get the code</h3>
           <p>Clone the repository, or download it as a ZIP and unpack it anywhere on your machine.</p>
-          <span class="inline-code">git clone github.com/liorA2102/web-councile</span>
+          <div class="get-code-row">
+            <span class="inline-code">git clone github.com/liorA2102/web-councile</span>
+            <a class="btn btn-ghost btn-sm" href="https://github.com/liorA2102/web-councile/archive/refs/heads/main.zip">&#8595; Download ZIP</a>
+          </div>
         </div>
       </div>
       <div class="install-step" data-tone="magenta">
