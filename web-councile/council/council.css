@@ -797,6 +797,14 @@ body {
   box-shadow: 0 0 6px var(--red) !important;
 }
 
+.progress-label {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
 .detail-toggle {
   margin-left: auto;
   flex: none;

@@ -308,8 +308,15 @@ function scrollTranscriptToBottom() {
 
 async function persistHistory() {
   if (!activeCouncilId) return;
-  councils[activeCouncilId] = { ...activeCouncil(), history };
-  await persistCouncils();
+  // Reads storage fresh rather than serializing council.js's in-memory
+  // `councils` snapshot — that snapshot is only loaded once at startup and
+  // never updated when background.js pins a session URL directly to storage
+  // (see savePinnedUrl), so writing it back here on every status update
+  // (this fires constantly during a broadcast) would silently clobber those
+  // pins back to stale/blank values.
+  await mutateCouncilsStorage((all) => {
+    all[activeCouncilId] = { ...(all[activeCouncilId] || activeCouncil()), history };
+  });
 }
 
 function renderTranscript() {
@@ -317,6 +324,19 @@ function renderTranscript() {
   transcriptEl.innerHTML = "";
   history.forEach((entry) => transcriptEl.appendChild(renderTurn(entry)));
   if (wasNearBottom) scrollTranscriptToBottom();
+}
+
+// A single-line readout next to the seat dots: "n/total done" while members
+// are still in flight, "Consolidating…" once every member has settled and
+// the judge call is running, and nothing once consolidation itself has
+// settled (terminal or never triggered) — the finished transcript speaks
+// for itself at that point.
+function computeProgressLabel(entry, services) {
+  const total = services.length;
+  const terminalCount = services.filter((s) => TERMINAL_STATES.has(entry.perModel[s].status)).length;
+  if (terminalCount < total) return `${terminalCount}/${total} done`;
+  if (entry.consolidated.status && !TERMINAL_STATES.has(entry.consolidated.status)) return "Consolidating…";
+  return null;
 }
 
 function renderTurn(entry) {
@@ -359,6 +379,9 @@ function renderTurn(entry) {
   });
   head.appendChild(progress);
 
+  const progressLabel = computeProgressLabel(entry, services);
+  if (progressLabel) head.appendChild(el("span", "progress-label", progressLabel));
+
   const toggle = el(
     "button",
     "detail-toggle",
@@ -389,6 +412,8 @@ function renderTurn(entry) {
     body.textContent = `Deliberating via ${SEAT_LABELS[entry.consolidated.via] || entry.consolidated.via}…`;
   } else if (entry.consolidated.status) {
     body.textContent = entry.consolidated.text || "";
+  } else {
+    body.textContent = `Waiting for at least two answers… (${doneCount}/${services.length} responded)`;
   }
   councilMsg.appendChild(body);
 
@@ -568,6 +593,37 @@ function persistCouncils() {
   });
 }
 
+// Reads `councils` fresh from storage, applies `mutateFn` to it, then writes
+// it back and updates the in-memory `councils` to match. Use this (instead
+// of mutating the in-memory `councils` and calling persistCouncils) for any
+// write that isn't guaranteed to run right after a fresh load, since
+// background.js pins session URLs directly to the same storage key
+// independently of council.js's in-memory state.
+//
+// Calls are chained onto `councilsWriteQueue` rather than firing
+// concurrently: persistHistory() (below) is called on every relayed status
+// update — WAITING/SENDING/STREAMING/DONE, which fire in rapid succession
+// while a response streams in — and each call's own read-modify-write round
+// trip is async. Without queueing, two overlapping calls can race: the
+// second reads storage before the first's write (which may have carried a
+// freshly-captured session pin) has landed, then overwrites it with what it
+// read — silently reverting the pin even though every individual write
+// looks correct in isolation.
+let councilsWriteQueue = Promise.resolve();
+function mutateCouncilsStorage(mutateFn) {
+  const run = () =>
+    new Promise((resolve) => {
+      chrome.storage.local.get(["councils"], (stored) => {
+        const all = stored.councils || {};
+        mutateFn(all);
+        councils = all;
+        chrome.storage.local.set({ councils, activeCouncilId }, resolve);
+      });
+    });
+  councilsWriteQueue = councilsWriteQueue.then(run, run);
+  return councilsWriteQueue;
+}
+
 function activeCouncil() {
   return councils[activeCouncilId] || { name: DEFAULT_COUNCIL_NAME, sessionLinks: {}, history: [] };
 }
@@ -664,7 +720,11 @@ async function selectCouncil(id) {
   const switchingCouncil = id !== activeCouncilId;
   if (switchingCouncil) {
     activeCouncilId = id;
-    await persistCouncils();
+    // Only the active-council pointer changed — persist just that key
+    // instead of persistCouncils()'s full `councils` rewrite, which would
+    // otherwise risk clobbering a session URL background.js pinned
+    // independently in between (see mutateCouncilsStorage).
+    await new Promise((resolve) => chrome.storage.local.set({ activeCouncilId }, resolve));
     history = activeCouncil().history || [];
     sending = false;
     consolidating = false;
@@ -711,12 +771,13 @@ newCouncilEl.addEventListener("click", async () => {
   const name = window.prompt("Name this council:", suggested);
   if (name === null) return; // cancelled
   const id = crypto.randomUUID();
-  councils[id] = { name: name.trim() || suggested, sessionLinks: {}, history: [] };
   activeCouncilId = id;
   history = [];
   sending = false;
   consolidating = false;
-  await persistCouncils();
+  await mutateCouncilsStorage((all) => {
+    all[id] = { name: name.trim() || suggested, sessionLinks: {}, history: [] };
+  });
   renderTranscript();
   refreshButtons();
   refreshCrmButton();
@@ -805,8 +866,9 @@ sessionFormEl.addEventListener("submit", async (e) => {
     url: judgeUrlEl.value.trim(),
     model: judgeModelEl.value.trim(),
   };
-  councils[editingId] = { ...(councils[editingId] || {}), sessionLinks: links };
-  await persistCouncils();
+  await mutateCouncilsStorage((all) => {
+    all[editingId] = { ...(all[editingId] || {}), sessionLinks: links };
+  });
   if (editingId === activeCouncilId) judgeService = links.consolidation.service;
   sessionModalEl.close();
 });

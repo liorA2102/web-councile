@@ -92,6 +92,18 @@
   // insensitive to how many interim bubbles a site inserts along the way.
   function watchUntilSettled(root, selector, quietMs, onSettled) {
     let timer = null;
+    // A short, generic-looking snippet ("Thinking", "Cogitating",
+    // "Sleuthing"...) at quiet-time is often a reasoning-in-progress
+    // placeholder bubble that just hasn't been replaced by the real answer
+    // yet, rather than a genuinely settled (if unusually short) reply — if
+    // the model pauses during that reasoning phase for longer than quietMs
+    // with no DOM mutations, we'd otherwise lock in the placeholder as
+    // "done". Give it a few longer quiet windows to prove itself before
+    // trusting it, instead of finalizing on the first quiet tick; give up
+    // and accept it after a bounded number of retries so this can't hang
+    // forever on a genuinely short real answer.
+    let placeholderRetriesLeft = 3;
+
     const observer = new MutationObserver(() => {
       if (timer) clearTimeout(timer);
       timer = setTimeout(finish, quietMs);
@@ -105,31 +117,59 @@
     // start observing (e.g. the response rendered fully before we attached).
     timer = setTimeout(finish, quietMs);
 
+    function looksLikePlaceholder(text) {
+      const trimmed = text.trim();
+      if (!trimmed) return false;
+      const words = trimmed.split(/\s+/);
+      return trimmed.length < 24 && words.length <= 3;
+    }
+
     function finish() {
-      observer.disconnect();
       const nodes = root.querySelectorAll(selector);
       const last = nodes[nodes.length - 1];
-      onSettled(last ? cleanExtractedText(last.innerText) : "");
+      const text = last ? cleanExtractedText(last.innerText) : "";
+      if (looksLikePlaceholder(text) && placeholderRetriesLeft > 0) {
+        placeholderRetriesLeft -= 1;
+        timer = setTimeout(finish, quietMs * 4);
+        return;
+      }
+      observer.disconnect();
+      onSettled(text);
     }
   }
 
-  // Polls (via rAF) for a selector's match count to grow past `countBefore`,
-  // resolving with the newest matching node, or null on timeout.
+  // Watches for a selector's match count to grow past `countBefore`,
+  // resolving with the newest matching node, or null on timeout. Uses a
+  // MutationObserver rather than polling via rAF/setTimeout — rAF in
+  // particular is paused by the browser for any tab that isn't the frontmost
+  // visible one, which meant this would silently hang forever for whichever
+  // of the 3 LLM tabs wasn't in focus at send time (i.e. 2 out of 3, always).
+  // MutationObserver callbacks fire off real DOM mutations regardless of tab
+  // visibility, so this now works the same whether the tab is on screen or
+  // sitting in the background.
   function waitForNewNode(selector, countBefore, timeoutMs) {
     return new Promise((resolve) => {
-      const start = Date.now();
-      (function check() {
+      const already = document.querySelectorAll(selector);
+      if (already.length > countBefore) {
+        resolve(already[already.length - 1]);
+        return;
+      }
+
+      let settled = false;
+      const observer = new MutationObserver(() => {
         const nodes = document.querySelectorAll(selector);
-        if (nodes.length > countBefore) {
-          resolve(nodes[nodes.length - 1]);
-          return;
-        }
-        if (Date.now() - start > timeoutMs) {
-          resolve(null);
-          return;
-        }
-        requestAnimationFrame(check);
-      })();
+        if (nodes.length > countBefore) finish(nodes[nodes.length - 1]);
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+      const timer = setTimeout(() => finish(null), timeoutMs);
+
+      function finish(result) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        observer.disconnect();
+        resolve(result);
+      }
     });
   }
 

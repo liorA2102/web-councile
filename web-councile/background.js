@@ -31,6 +31,32 @@ const CONSOLIDATION_TERMINAL = new Set([
 
 const TAB_LOAD_TIMEOUT_MS = 20000;
 
+// Each service gets its own dedicated window, small and never focused, so
+// it doesn't interrupt whatever the user is doing. Chrome pauses
+// rendering-related work like requestAnimationFrame — which these chat
+// sites use internally for their own streaming-text rendering — for a
+// *minimized* window or a tab that isn't the active one in its window; so 3
+// services sharing one window meant only whichever tab was activated last
+// ever actually finished without the user manually clicking over to it.
+// True off-screen placement was the first attempt, but chrome.windows.create
+// hard-rejects bounds that aren't at least 50% within the visible screen
+// ("Invalid value for bounds..."), so full invisibility isn't achievable —
+// this is a small on-screen window instead, cascaded per seat (see
+// seatWindowBounds) so multiple seats don't fully overlap and occlude one
+// another, which would silently reintroduce the same throttling.
+const SEAT_WINDOW_SIZE = { width: 480, height: 360 };
+const SEAT_WINDOW_ORDER = ["chatgpt", "claude", "gemini", "consolidation"];
+const SEAT_WINDOW_CASCADE_STEP = 60;
+
+function seatWindowBounds(storageKey) {
+  const index = Math.max(SEAT_WINDOW_ORDER.indexOf(storageKey), 0);
+  return {
+    left: 20 + index * SEAT_WINDOW_CASCADE_STEP,
+    top: 20 + index * SEAT_WINDOW_CASCADE_STEP,
+    ...SEAT_WINDOW_SIZE,
+  };
+}
+
 function log(...args) {
   console.log("[WebCouncile:background]", ...args);
 }
@@ -116,21 +142,32 @@ function handleCouncilMessage(message) {
 // own). Only opens the consolidation seat if it's actually pinned yet —
 // unlike the 3 members, it has no "default new chat" to fall back to here.
 async function openSessions() {
-  for (const serviceKey of Object.keys(SERVICES)) {
-    await focusSeat(serviceKey, SERVICES[serviceKey], serviceKey);
+  const serviceKeys = Object.keys(SERVICES);
+  for (let i = 0; i < serviceKeys.length; i++) {
+    await focusSeat(serviceKeys[i], SERVICES[serviceKeys[i]], serviceKeys[i], i);
   }
   const judgeService = await getJudgeService();
   if (await getPinnedUrl("consolidation")) {
-    await focusSeat(judgeService, SERVICES[judgeService], "consolidation");
+    await focusSeat(judgeService, SERVICES[judgeService], "consolidation", serviceKeys.length);
   }
 }
 
-async function focusSeat(serviceKey, service, storageKey) {
+async function focusSeat(serviceKey, service, storageKey, cascadeIndex = 0) {
   try {
     const { tabId } = await getOrCreateTab(serviceKey, service, storageKey);
     const tab = await chrome.tabs.update(tabId, { active: true });
     if (tab?.windowId != null) {
-      await chrome.windows.update(tab.windowId, { focused: true });
+      // Seats live in their own small, cascaded window by default (see
+      // seatWindowBounds) so background broadcasts don't interrupt the user
+      // — reposition it more prominently too (own cascade offset here so
+      // reopening all of them doesn't stack them exactly on top of one
+      // another) since the user is explicitly asking to look at it here.
+      await chrome.windows.update(tab.windowId, {
+        focused: true,
+        state: "normal",
+        left: 80 + cascadeIndex * 40,
+        top: 80 + cascadeIndex * 40,
+      });
     }
   } catch (err) {
     log(storageKey, "focusSeat failed:", err);
@@ -308,17 +345,32 @@ async function getActiveSessionLinks() {
   return councils[activeCouncilId].sessionLinks || {};
 }
 
-async function patchActiveSessionLinks(patchFn) {
-  const { councils, activeCouncilId } = await chrome.storage.local.get([
-    "councils",
-    "activeCouncilId",
-  ]);
-  if (!activeCouncilId) return; // no council selected yet; nothing to persist against
-  const all = councils || {};
-  const current = all[activeCouncilId] || { name: "Council", sessionLinks: {} };
-  current.sessionLinks = patchFn(current.sessionLinks || {});
-  all[activeCouncilId] = current;
-  await chrome.storage.local.set({ councils: all });
+// Chained onto sessionLinksWriteQueue rather than run directly: broadcastPrompt
+// fires chatgpt/claude/gemini's runForService calls concurrently, and each
+// one's capturePinnedUrl->savePinnedUrl->patchActiveSessionLinks call is its
+// own independent read-modify-write against chrome.storage.local. Without
+// serializing them, one service's read can land before another's write
+// completes, and its own write then overwrites that pin — the same race
+// council.js's mutateCouncilsStorage guards against, just on the
+// background.js side of the same storage key.
+let sessionLinksWriteQueue = Promise.resolve();
+function patchActiveSessionLinks(patchFn) {
+  const run = () =>
+    new Promise((resolve) => {
+      chrome.storage.local.get(["councils", "activeCouncilId"], ({ councils, activeCouncilId }) => {
+        if (!activeCouncilId) {
+          resolve(); // no council selected yet; nothing to persist against
+          return;
+        }
+        const all = councils || {};
+        const current = all[activeCouncilId] || { name: "Council", sessionLinks: {} };
+        current.sessionLinks = patchFn(current.sessionLinks || {});
+        all[activeCouncilId] = current;
+        chrome.storage.local.set({ councils: all }, resolve);
+      });
+    });
+  sessionLinksWriteQueue = sessionLinksWriteQueue.then(run, run);
+  return sessionLinksWriteQueue;
 }
 
 // Each seat stores { url, model } — members under their own key ("chatgpt"/
@@ -331,6 +383,23 @@ function seatLinks(sessionLinks, storageKey) {
 async function getPinnedUrl(storageKey) {
   const raw = seatLinks(await getActiveSessionLinks(), storageKey).url;
   return raw && raw.trim() ? raw.trim() : null;
+}
+
+// Every OTHER council's pinned URL for this seat. Tabs are only queried by
+// domain (see getOrCreateTab's `service.urlPattern` query), which has no
+// notion of which council a tab belongs to — without this, a council with no
+// pin yet could silently "reuse" a tab that's actually mid-conversation for
+// a different council instead of getting its own fresh chat.
+async function getUrlsPinnedByOtherCouncils(storageKey) {
+  const { councils, activeCouncilId } = await chrome.storage.local.get([
+    "councils",
+    "activeCouncilId",
+  ]);
+  return Object.entries(councils || {})
+    .filter(([id]) => id !== activeCouncilId)
+    .map(([, council]) => seatLinks(council.sessionLinks || {}, storageKey).url)
+    .filter((url) => url && url.trim())
+    .map((url) => url.trim());
 }
 
 // Empty string means "no preference configured" — content scripts treat
@@ -405,6 +474,59 @@ async function capturePinnedUrl(storageKey, tabId, urlBeforeSend) {
   }
 }
 
+// Window ids we've deliberately created to isolate one service's tab (see
+// openIsolatedWindow/ensureIsolatedWindow below). Isolation is tracked by id
+// rather than re-inferred each time from "does this tab currently have any
+// window-mates?", because broadcastPrompt fires all 3 services' runForService
+// calls concurrently: as the first two get popped out one after another, the
+// 3rd tab ends up alone in the original window purely by elimination — not
+// because it was ever actually isolated. A sibling-count check alone can't
+// tell those two cases apart, and would wrongly leave that last tab behind in
+// the user's regular (non-isolated, on-screen) window instead of giving it
+// its own off-screen one too.
+const isolatedWindowIds = new Set();
+
+// Opens `url` in a brand-new, isolated window (small, cascaded per seat —
+// see seatWindowBounds) and returns its tab's id once loaded.
+async function openIsolatedWindow(url, storageKey) {
+  const win = await chrome.windows.create({
+    url,
+    focused: false,
+    type: "normal",
+    ...seatWindowBounds(storageKey),
+  });
+  isolatedWindowIds.add(win.id);
+  log("isolate", `opened new isolated window ${win.id} at (${win.left}, ${win.top}) for`, url);
+  const tab = win.tabs?.[0] || (await chrome.tabs.query({ windowId: win.id }))[0];
+  await waitForTabComplete(tab.id);
+  return tab.id;
+}
+
+// Moves `tabId` into its own dedicated off-screen window unless its current
+// window is already one we isolated it into ourselves — checked strictly
+// against isolatedWindowIds, deliberately NOT by re-inspecting "does this
+// window have other tabs right now". A tab's original (shared) window is
+// never added to that set, so this always moves it out exactly once,
+// regardless of what order concurrent sibling isolations happen to finish
+// in. (If the background service worker restarts between rounds and forgets
+// isolatedWindowIds, worst case an already-isolated tab gets moved into a
+// fresh dedicated window again — harmless: its old, now-empty window just
+// closes itself, same as any window losing its last tab.)
+async function ensureIsolatedWindow(tabId, storageKey) {
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (!tab) return;
+  if (isolatedWindowIds.has(tab.windowId)) {
+    log("isolate", `tab ${tabId} already isolated in window ${tab.windowId}`);
+    return;
+  }
+  const win = await chrome.windows.create({ tabId, focused: false, ...seatWindowBounds(storageKey) });
+  isolatedWindowIds.add(win.id);
+  log(
+    "isolate",
+    `moved tab ${tabId} out of window ${tab.windowId} into new isolated window ${win.id} at (${win.left}, ${win.top})`,
+  );
+}
+
 // Returns { tabId, isFresh }. isFresh is true only for a genuinely blank,
 // just-created chat (no pinned URL existed, so there's nothing to reopen) —
 // that's the one case where trying to switch the site's model makes sense;
@@ -418,6 +540,7 @@ async function getOrCreateTab(serviceKey, service, storageKey = serviceKey) {
     const pinnedTab = tabs.find((t) => t.url && sameConversation(t.url, pinnedUrl));
     if (pinnedTab) {
       log(storageKey, "found pinned session tab, using", pinnedTab.id);
+      await ensureIsolatedWindow(pinnedTab.id, storageKey);
       return { tabId: pinnedTab.id, isFresh: false };
     }
     log(storageKey, "pinned session not open, opening", pinnedUrl);
@@ -427,9 +550,8 @@ async function getOrCreateTab(serviceKey, service, storageKey = serviceKey) {
       status: STATUS.NOT_OPEN,
       text: "Opening pinned session…",
     });
-    const tab = await chrome.tabs.create({ url: pinnedUrl, active: false });
-    await waitForTabComplete(tab.id);
-    return { tabId: tab.id, isFresh: false };
+    const tabId = await openIsolatedWindow(pinnedUrl, storageKey);
+    return { tabId, isFresh: false };
   }
 
   // Consolidation has no "whichever tab is open" fallback — its whole point
@@ -437,11 +559,20 @@ async function getOrCreateTab(serviceKey, service, storageKey = serviceKey) {
   // tab. With nothing pinned yet, start it fresh; it'll self-pin above.
   if (storageKey !== "consolidation") {
     if (tabs.length > 0) {
-      const active = tabs.find((t) => t.active) || tabs[0];
-      log(storageKey, `found ${tabs.length} existing tab(s), using`, active.id);
-      return { tabId: active.id, isFresh: false };
+      const claimedElsewhere = await getUrlsPinnedByOtherCouncils(storageKey);
+      const available = tabs.filter(
+        (t) => !t.url || !claimedElsewhere.some((u) => sameConversation(t.url, u)),
+      );
+      if (available.length > 0) {
+        const active = available.find((t) => t.active) || available[0];
+        log(storageKey, `found ${tabs.length} existing tab(s), using`, active.id);
+        await ensureIsolatedWindow(active.id, storageKey);
+        return { tabId: active.id, isFresh: false };
+      }
+      log(storageKey, `all ${tabs.length} existing tab(s) belong to other councils, opening a new one`);
+    } else {
+      log(storageKey, "no existing tab, will create one");
     }
-    log(storageKey, "no existing tab, will create one");
   } else {
     log(storageKey, "no pinned judge session yet, starting a fresh one");
   }
@@ -453,9 +584,8 @@ async function getOrCreateTab(serviceKey, service, storageKey = serviceKey) {
     text: "Opening tab…",
   });
 
-  const tab = await chrome.tabs.create({ url: service.url, active: false });
-  await waitForTabComplete(tab.id);
-  return { tabId: tab.id, isFresh: true };
+  const tabId = await openIsolatedWindow(service.url, storageKey);
+  return { tabId, isFresh: true };
 }
 
 function waitForTabComplete(tabId) {
