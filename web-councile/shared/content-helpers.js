@@ -138,6 +138,47 @@
     }
   }
 
+  // Waits for `find()` (a zero-arg function returning an element or null) to
+  // start returning a truthy element. Covers the gap between chrome.tabs
+  // reaching "complete" (background.js's waitForTabComplete, which fires on
+  // plain page load) and a heavy client-rendered SPA actually mounting its
+  // composer — chatgpt.com/gemini.google.com in particular can still be
+  // hydrating well after "complete", so a single immediate querySelector
+  // right after injection can race a real, not-actually-stale selector and
+  // misreport it as one. Combines a MutationObserver (fast path) with a
+  // polling fallback (covers mounts a subtree observer on document.body
+  // might miss, e.g. inside a shadow root) rather than either alone.
+  function waitForElement(find, timeoutMs) {
+    return new Promise((resolve) => {
+      const existing = find();
+      if (existing) {
+        resolve(existing);
+        return;
+      }
+
+      let settled = false;
+      const observer = new MutationObserver(() => {
+        const el = find();
+        if (el) finish(el);
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+      const poll = setInterval(() => {
+        const el = find();
+        if (el) finish(el);
+      }, 300);
+      const timer = setTimeout(() => finish(null), timeoutMs);
+
+      function finish(result) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        clearInterval(poll);
+        observer.disconnect();
+        resolve(result);
+      }
+    });
+  }
+
   // How long to allow before giving up waiting for the model's first reply
   // chunk to appear at all. A fixed value works for a normal short question,
   // but the consolidation step sends a much longer prompt (it bundles all 3
@@ -284,6 +325,7 @@
     pressEnter,
     watchUntilSettled,
     waitForNewNode,
+    waitForElement,
     startTimeoutFor,
     trySetModel,
     tryAttachMedia,

@@ -18,11 +18,17 @@
     pressEnter,
     watchUntilSettled,
     waitForNewNode,
+    waitForElement,
     startTimeoutFor,
     trySetModel,
     tryAttachMedia,
   } = self.WC_HELPERS;
   const SERVICE = "gemini";
+  // Gemini's client bundle can still be hydrating well after chrome.tabs
+  // reports the tab "complete" (see waitForElement in content-helpers.js) —
+  // give the composer this long to mount before treating it as genuinely
+  // missing/stale.
+  const COMPOSER_WAIT_MS = 10000;
 
   const SELECTORS = {
     composer: 'div[contenteditable="true"].ql-editor, div[contenteditable="true"]',
@@ -64,7 +70,10 @@
   async function run(prompt, media) {
     log(SERVICE, "run() start");
 
-    const composer = document.querySelector(SELECTORS.composer);
+    const composer = await waitForElement(
+      () => document.querySelector(SELECTORS.composer),
+      COMPOSER_WAIT_MS,
+    );
     if (!composer) {
       if (document.querySelector(SELECTORS.loginWall)) {
         log(SERVICE, "no composer, login wall detected");

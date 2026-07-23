@@ -18,11 +18,17 @@
     pressEnter,
     watchUntilSettled,
     waitForNewNode,
+    waitForElement,
     startTimeoutFor,
     trySetModel,
     tryAttachMedia,
   } = self.WC_HELPERS;
   const SERVICE = "chatgpt";
+  // ChatGPT's client bundle can still be hydrating well after chrome.tabs
+  // reports the tab "complete" (see waitForElement in content-helpers.js) —
+  // give the composer this long to mount before treating it as genuinely
+  // missing/stale.
+  const COMPOSER_WAIT_MS = 10000;
 
   const SELECTORS = {
     // Order matters and must NOT be combined into one comma-separated
@@ -78,7 +84,7 @@
   async function run(prompt, media) {
     log(SERVICE, "run() start");
 
-    const composer = findComposer();
+    const composer = await waitForElement(findComposer, COMPOSER_WAIT_MS);
     if (!composer) {
       if (document.querySelector(SELECTORS.loginWall)) {
         log(SERVICE, "no composer, login wall detected");
