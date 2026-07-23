@@ -138,6 +138,20 @@
     }
   }
 
+  // How long to allow before giving up waiting for the model's first reply
+  // chunk to appear at all. A fixed value works for a normal short question,
+  // but the consolidation step sends a much longer prompt (it bundles all 3
+  // members' full answers) — a model can reasonably take longer to even
+  // start replying to that than to a one-line question. Scale the allowance
+  // with prompt length instead of assuming every prompt is equally quick to
+  // start.
+  const BASE_START_TIMEOUT_MS = 15000;
+  const EXTRA_START_MS_PER_CHAR = 2;
+  const MAX_EXTRA_START_MS = 30000;
+  function startTimeoutFor(prompt) {
+    return BASE_START_TIMEOUT_MS + Math.min(MAX_EXTRA_START_MS, (prompt?.length || 0) * EXTRA_START_MS_PER_CHAR);
+  }
+
   // Watches for a selector's match count to grow past `countBefore`,
   // resolving with the newest matching node, or null on timeout. Uses a
   // MutationObserver rather than polling via rAF/setTimeout — rAF in
@@ -270,6 +284,7 @@
     pressEnter,
     watchUntilSettled,
     waitForNewNode,
+    startTimeoutFor,
     trySetModel,
     tryAttachMedia,
   };

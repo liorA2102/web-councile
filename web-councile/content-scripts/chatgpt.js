@@ -18,6 +18,7 @@
     pressEnter,
     watchUntilSettled,
     waitForNewNode,
+    startTimeoutFor,
     trySetModel,
     tryAttachMedia,
   } = self.WC_HELPERS;
@@ -121,7 +122,7 @@
     const node = await waitForNewNode(
       SELECTORS.assistantMessage,
       countBefore,
-      15000,
+      startTimeoutFor(prompt),
     );
     if (!node) {
       log(SERVICE, "timed out waiting for a new assistant message node");
