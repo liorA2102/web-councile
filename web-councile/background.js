@@ -602,6 +602,19 @@ async function getOrCreateTab(serviceKey, service, storageKey = serviceKey) {
         const active = available.find((t) => t.active) || available[0];
         log(storageKey, `found ${tabs.length} existing tab(s), using`, active.id);
         await ensureIsolatedWindow(active.id, storageKey);
+        // This tab was picked by elimination, not by a pin — if it already
+        // sits on a real, distinct conversation (not the site's own "start a
+        // new chat" URL), pin it now rather than waiting for
+        // capturePinnedUrl to notice a URL change after the next send, which
+        // never happens for an already-permanent URL. Without this, a seat
+        // that fell into this fallback path never becomes deterministic:
+        // every future round re-picks arbitrarily among however many stray
+        // same-site tabs are open, popping whichever one it lands on into
+        // yet another isolated window.
+        if (active.url && !sameConversation(active.url, service.url)) {
+          await savePinnedUrl(storageKey, active.url);
+          log(storageKey, "pinned already-open conversation ->", active.url);
+        }
         return { tabId: active.id, isFresh: false };
       }
       log(storageKey, `all ${tabs.length} existing tab(s) belong to other councils, opening a new one`);
