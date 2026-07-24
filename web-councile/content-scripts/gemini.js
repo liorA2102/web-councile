@@ -15,10 +15,11 @@
     log,
     sendStatus,
     setComposerText,
-    pressEnter,
+    submitComposer,
     watchUntilSettled,
     waitForNewNode,
     waitForElement,
+    queryAllCandidates,
     startTimeoutFor,
     trySetModel,
     tryAttachMedia,
@@ -38,7 +39,11 @@
     // menu) is common even while fully signed in, so this must never gate
     // ahead of the composer check.
     loginWall: 'a[href*="ServiceLogin"], button[aria-label*="Sign in" i]',
-    assistantMessage: "message-content, .model-response-text",
+    // Order matters and must NOT be combined into one comma-separated
+    // selector (see queryAllCandidates in content-helpers.js and the
+    // identical reasoning in claude.js) — kept as ranked fallbacks so a
+    // lingering fragment from one pattern can't win over the other's text.
+    assistantMessage: ["message-content", ".model-response-text"],
     // UNVERIFIED — no live look at this menu yet. Gemini shows its current
     // model (e.g. "Gemini Flash") as a dropdown near the top of the page;
     // almost certainly needs fixing against the real DOM (open that
@@ -99,20 +104,21 @@
     setComposerText(composer, prompt);
     await new Promise((r) => setTimeout(r, 150));
 
-    const sendBtn = document.querySelector(SELECTORS.sendButton);
-    if (sendBtn) {
-      log(SERVICE, "clicking send button");
-      sendBtn.click();
-    } else {
-      log(SERVICE, "no send button found, falling back to Enter keypress");
-      pressEnter(composer);
+    log(SERVICE, "submitting prompt");
+    const submitted = await submitComposer(composer, SELECTORS.sendButton);
+    if (!submitted) {
+      log(SERVICE, "composer never cleared after submit attempts — prompt likely wasn't sent");
+      sendStatus(
+        SERVICE,
+        STATUS.ERROR,
+        "Could not submit the prompt (composer didn't clear after several tries).",
+      );
+      return;
     }
 
     sendStatus(SERVICE, STATUS.WAITING, "Waiting for response…");
 
-    const countBefore = document.querySelectorAll(
-      SELECTORS.assistantMessage,
-    ).length;
+    const countBefore = queryAllCandidates(document, SELECTORS.assistantMessage).length;
     log(SERVICE, "watching for new assistant message, countBefore =", countBefore);
     const node = await waitForNewNode(
       SELECTORS.assistantMessage,
