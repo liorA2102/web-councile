@@ -87,8 +87,10 @@ chrome.action.onClicked.addListener(async () => {
   councilWindowId = win.id;
 });
 
-chrome.windows.onRemoved.addListener((closedId) => {
+chrome.windows.onRemoved.addListener(async (closedId) => {
   if (closedId === councilWindowId) councilWindowId = null;
+  const ids = await getIsolatedWindowIds();
+  if (ids.delete(closedId)) await persistIsolatedWindowIds(ids);
 });
 
 chrome.runtime.onConnect.addListener((port) => {
@@ -491,7 +493,34 @@ async function capturePinnedUrl(storageKey, tabId, urlBeforeSend) {
 // tell those two cases apart, and would wrongly leave that last tab behind in
 // the user's regular (non-isolated, on-screen) window instead of giving it
 // its own off-screen one too.
-const isolatedWindowIds = new Set();
+//
+// Backed by chrome.storage.session rather than a plain in-memory Set: the
+// service worker gets killed after ~30s idle and restarts fresh on the next
+// message, which for a normal back-and-forth is basically every round. An
+// in-memory Set would forget every seat was already isolated between
+// prompts, so ensureIsolatedWindow would pop each tab into a brand-new
+// window on every single message — session storage survives worker restarts
+// while still clearing when the browser itself closes (stale window ids from
+// a previous browser session are never valid to check against anyway).
+let isolatedWindowIdsCache = null;
+
+async function getIsolatedWindowIds() {
+  if (isolatedWindowIdsCache) return isolatedWindowIdsCache;
+  const { isolatedWindowIds } = await chrome.storage.session.get("isolatedWindowIds");
+  isolatedWindowIdsCache = new Set(isolatedWindowIds || []);
+  return isolatedWindowIdsCache;
+}
+
+async function persistIsolatedWindowIds(ids) {
+  isolatedWindowIdsCache = ids;
+  await chrome.storage.session.set({ isolatedWindowIds: [...ids] });
+}
+
+async function markWindowIsolated(windowId) {
+  const ids = await getIsolatedWindowIds();
+  ids.add(windowId);
+  await persistIsolatedWindowIds(ids);
+}
 
 // Opens `url` in a brand-new, isolated window (small, cascaded per seat —
 // see seatWindowBounds) and returns its tab's id once loaded.
@@ -502,7 +531,7 @@ async function openIsolatedWindow(url, storageKey) {
     type: "normal",
     ...seatWindowBounds(storageKey),
   });
-  isolatedWindowIds.add(win.id);
+  await markWindowIsolated(win.id);
   log("isolate", `opened new isolated window ${win.id} at (${win.left}, ${win.top}) for`, url);
   const tab = win.tabs?.[0] || (await chrome.tabs.query({ windowId: win.id }))[0];
   await waitForTabComplete(tab.id);
@@ -511,23 +540,22 @@ async function openIsolatedWindow(url, storageKey) {
 
 // Moves `tabId` into its own dedicated off-screen window unless its current
 // window is already one we isolated it into ourselves — checked strictly
-// against isolatedWindowIds, deliberately NOT by re-inspecting "does this
-// window have other tabs right now". A tab's original (shared) window is
-// never added to that set, so this always moves it out exactly once,
-// regardless of what order concurrent sibling isolations happen to finish
-// in. (If the background service worker restarts between rounds and forgets
-// isolatedWindowIds, worst case an already-isolated tab gets moved into a
-// fresh dedicated window again — harmless: its old, now-empty window just
-// closes itself, same as any window losing its last tab.)
+// against the persisted isolatedWindowIds set (see getIsolatedWindowIds),
+// deliberately NOT by re-inspecting "does this window have other tabs right
+// now". A tab's original (shared) window is never added to that set, so this
+// always moves it out exactly once, regardless of what order concurrent
+// sibling isolations happen to finish in, and regardless of how many times
+// the service worker has restarted since the tab was first isolated.
 async function ensureIsolatedWindow(tabId, storageKey) {
   const tab = await chrome.tabs.get(tabId).catch(() => null);
   if (!tab) return;
-  if (isolatedWindowIds.has(tab.windowId)) {
+  const ids = await getIsolatedWindowIds();
+  if (ids.has(tab.windowId)) {
     log("isolate", `tab ${tabId} already isolated in window ${tab.windowId}`);
     return;
   }
   const win = await chrome.windows.create({ tabId, focused: false, ...seatWindowBounds(storageKey) });
-  isolatedWindowIds.add(win.id);
+  await markWindowIsolated(win.id);
   log(
     "isolate",
     `moved tab ${tabId} out of window ${tab.windowId} into new isolated window ${win.id} at (${win.left}, ${win.top})`,
