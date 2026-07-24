@@ -412,6 +412,12 @@ function renderTurn(entry) {
     body.textContent = `Deliberating via ${SEAT_LABELS[entry.consolidated.via] || entry.consolidated.via}…`;
   } else if (entry.consolidated.status) {
     body.textContent = entry.consolidated.text || "";
+  } else if (doneCount >= 2) {
+    // Quorum is already met — the ⚡ Consolidate button above is live and
+    // auto-consolidate will fire the moment every seat finishes. Saying
+    // "waiting for at least two answers" here would be stale/wrong: at
+    // least two have already answered, so say so instead.
+    body.textContent = `${doneCount}/${services.length} answered — consolidate now, or wait for the rest.`;
   } else {
     body.textContent = `Waiting for at least two answers… (${doneCount}/${services.length} responded)`;
   }

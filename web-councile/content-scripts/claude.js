@@ -15,14 +15,21 @@
     log,
     sendStatus,
     setComposerText,
-    pressEnter,
+    submitComposer,
     watchUntilSettled,
     waitForNewNode,
+    waitForElement,
+    queryAllCandidates,
     startTimeoutFor,
     trySetModel,
     tryAttachMedia,
   } = self.WC_HELPERS;
   const SERVICE = "claude";
+  // Claude's client bundle can still be hydrating well after chrome.tabs
+  // reports the tab "complete" (see waitForElement in content-helpers.js) —
+  // give the composer this long to mount before treating it as genuinely
+  // missing/stale.
+  const COMPOSER_WAIT_MS = 10000;
 
   const SELECTORS = {
     composer:
@@ -32,7 +39,14 @@
     // elsewhere in the DOM is common even while fully signed in, so this
     // must never gate ahead of the composer check.
     loginWall: 'button[data-testid="login-button"]',
-    assistantMessage: '[data-testid="assistant-message"] , div[data-is-streaming]',
+    // Order matters and must NOT be combined into one comma-separated
+    // selector (see queryAllCandidates in content-helpers.js): the full
+    // message container is the reliable signal for "done"; the inner
+    // streaming-status fragment is only a fallback for when that container
+    // isn't present at all, not an equal alternative to combine with it —
+    // combining them let a lingering tool-status fragment (e.g. "Searching
+    // the web") win over the real message container's text.
+    assistantMessage: ['[data-testid="assistant-message"]', 'div[data-is-streaming]'],
     // UNVERIFIED — no live look at this menu yet. Claude's model picker is
     // typically a button near the composer showing the current model's
     // name; almost certainly needs fixing against the real DOM (open the
@@ -64,7 +78,10 @@
   async function run(prompt, media) {
     log(SERVICE, "run() start");
 
-    const composer = document.querySelector(SELECTORS.composer);
+    const composer = await waitForElement(
+      () => document.querySelector(SELECTORS.composer),
+      COMPOSER_WAIT_MS,
+    );
     if (!composer) {
       if (document.querySelector(SELECTORS.loginWall)) {
         log(SERVICE, "no composer, login wall detected");
@@ -90,20 +107,21 @@
     setComposerText(composer, prompt);
     await new Promise((r) => setTimeout(r, 150));
 
-    const sendBtn = document.querySelector(SELECTORS.sendButton);
-    if (sendBtn) {
-      log(SERVICE, "clicking send button");
-      sendBtn.click();
-    } else {
-      log(SERVICE, "no send button found, falling back to Enter keypress");
-      pressEnter(composer);
+    log(SERVICE, "submitting prompt");
+    const submitted = await submitComposer(composer, SELECTORS.sendButton);
+    if (!submitted) {
+      log(SERVICE, "composer never cleared after submit attempts — prompt likely wasn't sent");
+      sendStatus(
+        SERVICE,
+        STATUS.ERROR,
+        "Could not submit the prompt (composer didn't clear after several tries).",
+      );
+      return;
     }
 
     sendStatus(SERVICE, STATUS.WAITING, "Waiting for response…");
 
-    const countBefore = document.querySelectorAll(
-      SELECTORS.assistantMessage,
-    ).length;
+    const countBefore = queryAllCandidates(document, SELECTORS.assistantMessage).length;
     log(SERVICE, "watching for new assistant message, countBefore =", countBefore);
     const node = await waitForNewNode(
       SELECTORS.assistantMessage,

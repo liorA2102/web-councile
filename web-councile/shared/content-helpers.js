@@ -55,6 +55,43 @@
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
+  function composerIsEmpty(composer) {
+    const text = composer.isContentEditable ? composer.textContent : composer.value;
+    return !text || !text.trim();
+  }
+
+  // Clicks the send button (or falls back to Enter) and CONFIRMS it actually
+  // took effect — a sent message clears the composer, so if it's still
+  // sitting there after a short wait, the click/Enter never really landed
+  // and we retry instead of silently moving on to wait for a reply that will
+  // never come.
+  //
+  // This matters most for a brand-new chat: our waitForElement only confirms
+  // the composer DOM node exists, not that the site's own framework has
+  // finished wiring real input handling to it yet (React/ProseMirror etc.
+  // can still be attaching listeners to a just-mounted node for a beat after
+  // it's queryable). A synthetic click/Enter sent into that gap can be a
+  // silent no-op: the framework never registers it as a real submit, so the
+  // typed prompt is left sitting in the composer, unsent, while we'd
+  // otherwise go on to wait 45s for a response that was never actually
+  // requested. An already-open, already-interacted-with conversation's
+  // composer doesn't have this gap, which is why this mainly shows up for
+  // fresh sessions (a brand-new chat, or the consolidation judge's first
+  // use) rather than a reused one.
+  async function submitComposer(composer, sendButtonSelector) {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (composerIsEmpty(composer)) return true;
+      const sendBtn = document.querySelector(sendButtonSelector);
+      if (sendBtn && !sendBtn.disabled) {
+        sendBtn.click();
+      } else {
+        pressEnter(composer);
+      }
+      await new Promise((r) => setTimeout(r, 500 + attempt * 400));
+    }
+    return composerIsEmpty(composer);
+  }
+
   // Strips UI chrome that leaks into innerText-based extraction on modern
   // reasoning-model interfaces:
   //  - screen-reader-only "<Model> responded:" labels — a11y text nodes that
@@ -65,16 +102,49 @@
   //    duplicate (once for the live label, once for an a11y-only echo)
   //  - stray private-use-area glyphs from icon fonts (the collapse/expand
   //    toggle icon) that render as a tofu box with no real text meaning
+  //  - a line that exactly repeats the last non-blank line before it — the
+  //    same a11y-echo mechanism that duplicates the "<Model> responded:"
+  //    label above sometimes duplicates a short summary/title line too
   // General cleanup applied to every extraction, not site-specific.
   function cleanExtractedText(text) {
-    return text
+    const lines = text
       .replace(/^\s*(ChatGPT|Claude|Gemini)\s+responded:\s*/i, "")
       .split("\n")
       .map((line) => line.replace(/[\uE000-\uF8FF]/g, "").trim())
-      .filter((line) => !/^Thought for\s+[\w\s]+$/i.test(line))
+      .filter((line) => !/^Thought for\s+[\w\s]+$/i.test(line));
+
+    let lastNonBlank = null;
+    const deduped = lines.filter((line) => {
+      if (line === "") return true;
+      if (line === lastNonBlank) return false;
+      lastNonBlank = line;
+      return true;
+    });
+
+    return deduped
       .join("\n")
       .replace(/\n{3,}/g, "\n\n")
       .trim();
+  }
+
+  // Queries a selector that may be a single string or an ordered list of
+  // candidate strings. A candidate list is deliberately NOT combined into one
+  // comma-separated selector: querySelectorAll on a comma list returns
+  // matches in DOM order across every alternative, not "prefer the first
+  // listed" — when two candidates target structurally different things (a
+  // full message container vs. an inner streaming-status fragment), that can
+  // hand back the wrong one depending on where it happens to sit in the DOM.
+  // Same reasoning as findComposer's composerCandidates in chatgpt.js, just
+  // generalized so every candidate-selector site (assistantMessage included)
+  // gets the same "try the first candidate that actually matches, in order"
+  // behavior instead of each content script reimplementing it.
+  function queryAllCandidates(root, selector) {
+    const candidates = Array.isArray(selector) ? selector : [selector];
+    for (const candidate of candidates) {
+      const nodes = root.querySelectorAll(candidate);
+      if (nodes.length > 0) return nodes;
+    }
+    return [];
   }
 
   // Fallback completion signal: watches `root` for DOM mutations and, once
@@ -102,7 +172,22 @@
     // trusting it, instead of finalizing on the first quiet tick; give up
     // and accept it after a bounded number of retries so this can't hang
     // forever on a genuinely short real answer.
+    //
+    // A tool-call/reasoning status line ("Searching the web", "Thinking
+    // about…") is the same problem in a different shape: the model can go
+    // quiet for longer than quietMs between starting a tool call or an
+    // extended-thinking pass and the real answer actually landing, which
+    // locks in that status line as the final answer instead of waiting —
+    // this is especially likely for consolidation, whose prompt bundles all
+    // 3 members' full answers and so gives a reasoning model much more to
+    // visibly "think" through before the real synthesized reply exists.
+    // Checked against the FIRST line too (not just the last): a live
+    // "Thinking about X…" opener with no final answer rendered yet is still
+    // the entire captured text at settle time, not just a trailing status
+    // fragment after other content.
     let placeholderRetriesLeft = 3;
+    const TOOL_STATUS_LINE =
+      /^(thinking|searching|browsing|reading|looking (up|for|into)|fetching|analyzing|running)\b/i;
 
     const observer = new MutationObserver(() => {
       if (timer) clearTimeout(timer);
@@ -117,18 +202,22 @@
     // start observing (e.g. the response rendered fully before we attached).
     timer = setTimeout(finish, quietMs);
 
-    function looksLikePlaceholder(text) {
+    function looksUnsettled(text) {
       const trimmed = text.trim();
       if (!trimmed) return false;
+      const nonBlankLines = trimmed.split("\n").map((l) => l.trim()).filter(Boolean);
+      const firstLine = nonBlankLines[0] || trimmed;
+      const lastLine = nonBlankLines[nonBlankLines.length - 1] || trimmed;
+      if (TOOL_STATUS_LINE.test(firstLine) || TOOL_STATUS_LINE.test(lastLine)) return true;
       const words = trimmed.split(/\s+/);
       return trimmed.length < 24 && words.length <= 3;
     }
 
     function finish() {
-      const nodes = root.querySelectorAll(selector);
+      const nodes = queryAllCandidates(root, selector);
       const last = nodes[nodes.length - 1];
       const text = last ? cleanExtractedText(last.innerText) : "";
-      if (looksLikePlaceholder(text) && placeholderRetriesLeft > 0) {
+      if (looksUnsettled(text) && placeholderRetriesLeft > 0) {
         placeholderRetriesLeft -= 1;
         timer = setTimeout(finish, quietMs * 4);
         return;
@@ -136,6 +225,47 @@
       observer.disconnect();
       onSettled(text);
     }
+  }
+
+  // Waits for `find()` (a zero-arg function returning an element or null) to
+  // start returning a truthy element. Covers the gap between chrome.tabs
+  // reaching "complete" (background.js's waitForTabComplete, which fires on
+  // plain page load) and a heavy client-rendered SPA actually mounting its
+  // composer — chatgpt.com/gemini.google.com in particular can still be
+  // hydrating well after "complete", so a single immediate querySelector
+  // right after injection can race a real, not-actually-stale selector and
+  // misreport it as one. Combines a MutationObserver (fast path) with a
+  // polling fallback (covers mounts a subtree observer on document.body
+  // might miss, e.g. inside a shadow root) rather than either alone.
+  function waitForElement(find, timeoutMs) {
+    return new Promise((resolve) => {
+      const existing = find();
+      if (existing) {
+        resolve(existing);
+        return;
+      }
+
+      let settled = false;
+      const observer = new MutationObserver(() => {
+        const el = find();
+        if (el) finish(el);
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+      const poll = setInterval(() => {
+        const el = find();
+        if (el) finish(el);
+      }, 300);
+      const timer = setTimeout(() => finish(null), timeoutMs);
+
+      function finish(result) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        clearInterval(poll);
+        observer.disconnect();
+        resolve(result);
+      }
+    });
   }
 
   // How long to allow before giving up waiting for the model's first reply
@@ -163,7 +293,7 @@
   // sitting in the background.
   function waitForNewNode(selector, countBefore, timeoutMs) {
     return new Promise((resolve) => {
-      const already = document.querySelectorAll(selector);
+      const already = queryAllCandidates(document, selector);
       if (already.length > countBefore) {
         resolve(already[already.length - 1]);
         return;
@@ -171,7 +301,7 @@
 
       let settled = false;
       const observer = new MutationObserver(() => {
-        const nodes = document.querySelectorAll(selector);
+        const nodes = queryAllCandidates(document, selector);
         if (nodes.length > countBefore) finish(nodes[nodes.length - 1]);
       });
       observer.observe(document.body, { childList: true, subtree: true });
@@ -282,8 +412,11 @@
     sendStatus,
     setComposerText,
     pressEnter,
+    submitComposer,
     watchUntilSettled,
     waitForNewNode,
+    waitForElement,
+    queryAllCandidates,
     startTimeoutFor,
     trySetModel,
     tryAttachMedia,
